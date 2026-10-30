@@ -99,26 +99,27 @@
 }
 
 [data-theme="light"] {
-  --bg: #f1f4fb;
-  --surface: rgba(255, 255, 255, .88);
-  --surface-2: rgba(20, 40, 100, .04);
-  --border: rgba(20, 40, 100, .1);
-  --text: #141b33;
-  --muted: #5d6888;
-  --accent: #3d6bff;
-  --accent-2: #7b55ff;
-  --hot: #e8325c;
-  --ok: #0aa874;
-  --warn: #c98a00;
+  /* тепла «паперова» палітра: бірюза + фіолет, без поєднання біло-синьо-червоного */
+  --bg: #f5f2ea;
+  --surface: rgba(255, 253, 248, .9);
+  --surface-2: rgba(60, 50, 30, .045);
+  --border: rgba(60, 50, 30, .12);
+  --text: #1f2421;
+  --muted: #69706b;
+  --accent: #0f8f80;
+  --accent-2: #7c4dcc;
+  --hot: #d9620f;
+  --ok: #2f8f3a;
+  --warn: #b7791f;
   --on-accent: #fff;
   --radius: 20px;
   --radius-sm: 12px;
   --font: Inter, "Segoe UI", system-ui, sans-serif;
   --font-display: Inter, "Segoe UI", system-ui, sans-serif;
-  --shadow: 0 14px 40px rgba(40, 60, 120, .12);
-  --glow: 0 6px 20px rgba(61, 107, 255, .2);
+  --shadow: 0 14px 40px rgba(70, 55, 30, .12);
+  --glow: 0 6px 20px rgba(15, 143, 128, .22);
   --blur: blur(16px);
-  --title-grad: linear-gradient(90deg, #3d6bff, #7b55ff, #e8325c, #3d6bff);
+  --title-grad: linear-gradient(90deg, #0f8f80, #7c4dcc, #d9a11f, #0f8f80);
   color-scheme: light;
 }
 
@@ -356,8 +357,10 @@ body.alarm .logo__ping { animation-duration: .8s; }
 .alert-bar.is-alarm .alert-bar__title { font-size: 17px; color: #fff; text-transform: uppercase; letter-spacing: .5px; }
 .alert-bar.is-alarm .alert-bar__meta { color: #ffd0d8; }
 .alert-bar.is-alarm .alert-bar__dot { background: #ff2a4f; box-shadow: 0 0 12px #ff2a4f, 0 0 30px #ff2a4f; animation: dot 1s ease-in-out infinite; }
-[data-theme="light"] .alert-bar.is-alarm .alert-bar__title { color: #9b0021; }
-[data-theme="light"] .alert-bar.is-alarm .alert-bar__meta { color: #9b0021; }
+[data-theme="light"] .alert-bar.is-alarm { background: linear-gradient(135deg, rgba(217, 98, 15, .22), rgba(217, 98, 15, .08)); border-color: rgba(217, 98, 15, .6); }
+[data-theme="light"] .alert-bar.is-alarm .alert-bar__title { color: #8a3a05; }
+[data-theme="light"] .alert-bar.is-alarm .alert-bar__meta { color: #8a3a05; }
+[data-theme="light"] .alert-bar.is-alarm .alert-bar__dot { background: var(--hot); box-shadow: 0 0 12px var(--hot); }
 
 /* =========================================================
    ГОЛОВНА КАРТКА
@@ -752,7 +755,7 @@ body.alarm .fx__orb--a, body.alarm .fx__orb--b { background: radial-gradient(cir
 [data-theme="synth"] .hero__subject, [data-theme="synth"] .h2 { text-shadow: 0 0 14px rgba(255, 60, 172, .6); }
 
 /* світла та OLED: без декору */
-[data-theme="light"] body { background: radial-gradient(circle at 50% -20%, rgba(61, 107, 255, .14), transparent 45%), var(--bg); }
+[data-theme="light"] body { background: radial-gradient(circle at 50% -20%, rgba(15, 143, 128, .14), transparent 45%), var(--bg); }
 [data-theme="mono"] .brand__logo { animation: none; }
 [data-theme="mono"] .brand__title { animation: none; }
 

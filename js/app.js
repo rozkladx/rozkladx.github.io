@@ -617,10 +617,10 @@
     { id: 'cyber', name: 'Кіберпанк', desc: 'Жовтий неон, гліч, рубані кути', sw: ['#0a0a12', '#fcee0a', '#00f0ff'] },
     { id: 'terminal', name: 'Термінал', desc: 'Зелений моноширинний CRT', sw: ['#030803', '#33ff66', '#1f9d45'] },
     { id: 'synth', name: 'Синтвейв', desc: 'Ретро-80-ті, сонце й сітка', sw: ['#1a0533', '#ff3cac', '#2bd2ff'] },
-    { id: 'light', name: 'Світлий', desc: 'Чисто й спокійно вдень', sw: ['#f3f5fb', '#3d6bff', '#ff4d6d'] },
+    { id: 'light', name: 'Світлий', desc: 'Чисто й спокійно вдень', sw: ['#f5f2ea', '#0f8f80', '#7c4dcc'] },
     { id: 'mono', name: 'OLED', desc: 'Чорний мінімалізм, економить батарею', sw: ['#000000', '#ffffff', '#8a8a8a'] },
   ];
-  const THEME_COLOR = { neon: '#05070f', cyber: '#0a0a12', terminal: '#030803', synth: '#1a0533', light: '#f3f5fb', mono: '#000000' };
+  const THEME_COLOR = { neon: '#05070f', cyber: '#0a0a12', terminal: '#030803', synth: '#1a0533', light: '#f5f2ea', mono: '#000000' };
 
   function applyTheme(id) {
     if (!THEMES.some((t) => t.id === id)) id = 'neon';
