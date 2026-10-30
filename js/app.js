@@ -555,10 +555,21 @@
     wet.gain.value = 0.9;
     verb.connect(wet);
     wet.connect(comp);
+    // м'який фільтр «тембру»: прибирає різкі верхні частоти, щоб звук не дзвенів
+    const tone = actx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.frequency.value = 2400;
+    tone.Q.value = 0.5;
+    const warm = actx.createBiquadFilter();
+    warm.type = 'lowshelf';
+    warm.frequency.value = 250;
+    warm.gain.value = 4;
     // компенсація гучності після компресора
     const makeup = actx.createGain();
-    makeup.gain.value = 1.8;
-    comp.connect(makeup);
+    makeup.gain.value = 2;
+    comp.connect(tone);
+    tone.connect(warm);
+    warm.connect(makeup);
     makeup.connect(masterGain);
     masterGain.connect(analyser);
     analyser.connect(actx.destination);
@@ -614,12 +625,13 @@
   }
 
   // дзвін: набір негармонійних обертонів (як у металевого дзвіночка), верхні згасають швидше
-  const BELL_PARTIALS = [[0.5, 0.35], [1, 1], [2, 0.42], [2.76, 0.32], [4.07, 0.16], [5.4, 0.1], [8.93, 0.05]];
+  // мало верхніх обертонів — звук м'який, як у вібрафона, а не дзвінкий
+  const BELL_PARTIALS = [[0.5, 0.5], [1, 1], [2, 0.22], [3, 0.08], [4.07, 0.03]];
   function bell(dest, f, at, dur, vol, out, partials = BELL_PARTIALS) {
     const t0 = actx.currentTime + at + 0.02;
     partials.forEach(([ratio, amp], i) => {
       const d = dur / (1 + i * 0.55);
-      const g = envGain(dest, t0, vol * amp, 0.003 + i * 0.0005, d);
+      const g = envGain(dest, t0, vol * amp, 0.012 + i * 0.002, d);   // м'яка атака без «удару»
       osc('sine', f * ratio, t0, t0 + d, out, (Math.random() - 0.5) * 6).connect(g);
     });
   }
@@ -675,7 +687,7 @@
       shaper.curve = k;
       const lp = actx.createBiquadFilter();
       lp.type = 'lowpass';
-      lp.Q.value = 3;
+      lp.Q.value = 1.2;
       const g = actx.createGain();
       g.gain.setValueAtTime(0.0001, t0);
       g.gain.linearRampToValueAtTime(0.16, t0 + 0.25);
@@ -707,53 +719,51 @@
           o.frequency.exponentialRampToValueAtTime(380 * m, a + half * 2);
         }
         lp.frequency.setValueAtTime(900, a);
-        lp.frequency.exponentialRampToValueAtTime(3800, a + half);
+        lp.frequency.exponentialRampToValueAtTime(2000, a + half);
         lp.frequency.exponentialRampToValueAtTime(900, a + half * 2);
       }
       return out;
     },
-    // відбій: теплий мажорний акорд + дзвіночки вгору
+    // відбій: теплий мажорний акорд + м'які ноти вгору
     clear: (d) => {
       const out = [];
-      pad(d, [N.C4, N.E4, N.G4], 0, 3.2, 0.05, out);
-      [N.C6, N.E6, N.G6].forEach((f, i) => bell(d, f, 0.25 + i * 0.22, 2.4, 0.09, out));
-      bell(d, N.C5, 0, 3, 0.12, out);
+      pad(d, [N.C4 / 2, N.E4 / 2, N.G4 / 2, N.C4], 0, 3.4, 0.045, out);
+      [N.C5, N.E5, N.G5].forEach((f, i) => bell(d, f, 0.3 + i * 0.24, 2.4, 0.1, out));
+      bell(d, N.C4, 0, 3, 0.14, out);
       return out;
     },
-    // початок пари: висхідне арпеджіо дзвонів
+    // початок пари: висхідне арпеджіо
     start: (d) => {
       const out = [];
-      [N.C5, N.E5, N.G5].forEach((f, i) => bell(d, f, i * 0.13, 1.6, 0.16, out));
-      bell(d, N.C6, 0.42, 2.4, 0.13, out);
+      [N.C4, N.E4, N.G4].forEach((f, i) => bell(d, f, i * 0.14, 1.8, 0.2, out));
+      bell(d, N.C5, 0.44, 2.4, 0.16, out);
       return out;
     },
-    // кінець пари: низхідна фраза, нижчий і довший дзвін
+    // кінець пари: низхідна фраза, низький довгий тон
     end: (d) => {
       const out = [];
-      [N.G5, N.E5, N.C5].forEach((f, i) => bell(d, f, i * 0.16, 1.5, 0.16, out));
-      bell(d, N.C4, 0.5, 3, 0.2, out);
+      [N.G4, N.E4, N.C4].forEach((f, i) => bell(d, f, i * 0.17, 1.7, 0.2, out));
+      bell(d, N.C4 / 2, 0.52, 3, 0.24, out);
       return out;
     },
-    // скоро пара: два «скляні» удари
+    // скоро пара: два м'які удари
     soon: (d) => {
       const out = [];
-      const glass = [[1, 1], [2.32, 0.4], [4.25, 0.18], [6.63, 0.08]];
-      [0, 0.5].forEach((at) => { bell(d, N.A5, at, 1.2, 0.14, out, glass); bell(d, N.E6, at + 0.12, 1.4, 0.1, out, glass); });
+      [0, 0.55].forEach((at) => { bell(d, N.A4, at, 1.3, 0.18, out); bell(d, N.E5, at + 0.13, 1.4, 0.12, out); });
       return out;
     },
     // нова заміна: короткий двотональний сигнал повідомлення
     sub: (d) => {
       const out = [];
-      bell(d, N.D6, 0, 0.9, 0.13, out);
-      bell(d, N.A5 * 2, 0.14, 1.3, 0.11, out);
-      click(d, 0, 0.2, 3000, out);
+      bell(d, N.D5, 0, 1, 0.17, out);
+      bell(d, N.A5, 0.15, 1.4, 0.13, out);
       return out;
     },
-    // інтерфейс: м'який тихий клік
+    // інтерфейс: тихий приглушений «тук»
     ui: (d) => {
       const out = [];
-      click(d, 0, 0.5, 2200, out);
-      bell(d, 1900, 0, 0.12, 0.05, out, [[1, 1], [2.76, 0.3]]);
+      click(d, 0, 0.35, 900, out);
+      bell(d, 620, 0, 0.12, 0.07, out, [[1, 1], [2, 0.15]]);
       return out;
     },
   };
