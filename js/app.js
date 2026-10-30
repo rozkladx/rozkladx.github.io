@@ -1575,7 +1575,21 @@
       const minute = Math.floor(nowWallMs() / 60000);
       if (minute !== lastMinute) { lastMinute = minute; renderSchedule(); renderOrderNote(); }
     }, 1000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) renderAll(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { renderAll(); checkForUpdate(); } });
+    setInterval(checkForUpdate, 5 * 60 * 1000);
+  }
+
+  /* ---------- Оновлення сайту ---------- */
+  // Відкрита вкладка продовжує виконувати старий код, навіть коли на сервері вже нова версія.
+  // Тому періодично дивимось версію в index.html і, якщо вона змінилась, перезавантажуємо сторінку.
+  const APP_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || '';
+  async function checkForUpdate() {
+    if (!APP_VERSION) return;
+    try {
+      const html = await (await fetch('index.html?check=' + Date.now(), { cache: 'no-store' })).text();
+      const m = html.match(/name="app-version" content="([^"]+)"/);
+      if (m && m[1] !== APP_VERSION) location.reload();
+    } catch (e) { /* офлайн — перевіримо пізніше */ }
   }
 
   function shiftWeek(n) {
