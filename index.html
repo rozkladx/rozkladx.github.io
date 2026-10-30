@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="uk" data-theme="neon">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>НаПару — розклад КАІ ТЕХ</title>
+  <meta name="description" content="НаПару: розклад пар з робочими суботами, замінами з розпоряджень коледжу та сповіщеннями про тривогу.">
+  <meta name="theme-color" content="#05070f">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235b86ff'/%3E%3Cstop offset='1' stop-color='%239a6bff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Ccircle cx='31' cy='34' r='17' fill='none' stroke='%23fff' stroke-width='5'/%3E%3Cpath d='M31 24v11l7 5' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='50' cy='14' r='7' fill='%23ff3d6a' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;600;800&family=Audiowide&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <script>
+    // тема ставиться до малювання сторінки, щоб не блимало
+    (function () {
+      var t = null;
+      try { t = (JSON.parse(localStorage.getItem('rz_settings')) || {}).theme; } catch (e) {}
+      if (t) document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+</head>
+<body>
+
+<!-- декоративний фон: кожна тема показує свої шари -->
+<div class="fx" aria-hidden="true">
+  <div class="fx__orb fx__orb--a"></div>
+  <div class="fx__orb fx__orb--b"></div>
+  <div class="fx__grid"></div>
+  <div class="fx__sun"></div>
+  <div class="fx__floor"></div>
+  <div class="fx__scan"></div>
+</div>
+
+<div class="app">
+
+  <!-- ВЕРХНЯ ПАНЕЛЬ -->
+  <header class="top">
+    <div class="brand">
+      <svg class="brand__logo" viewBox="0 0 64 64" aria-hidden="true">
+        <defs>
+          <linearGradient id="logoGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" class="logo__stop1"/>
+            <stop offset="1" class="logo__stop2"/>
+          </linearGradient>
+        </defs>
+        <rect class="logo__bg" width="64" height="64" rx="16" fill="url(#logoGrad)"/>
+        <circle class="logo__ring" cx="31" cy="34" r="17" fill="none" stroke-width="5"/>
+        <path class="logo__hands" d="M31 24v11l7 5" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle class="logo__ping" cx="50" cy="14" r="7" stroke-width="3"/>
+      </svg>
+      <div class="brand__text">
+        <div class="brand__title" data-text="НаПару">НаПару</div>
+        <button class="brand__group" id="groupName" type="button" title="Змінити групу">…</button>
+      </div>
+    </div>
+
+    <div class="clock">
+      <div class="clock__time" id="clock">--:--:--</div>
+      <div class="clock__date"><span id="dateText">…</span> · <span class="clock__week" id="weekBadge">…</span></div>
+      <div class="clock__tz" id="tzNote"></div>
+    </div>
+
+    <div class="top__actions">
+      <button class="icon-btn" id="themeQuick" type="button" title="Наступний стиль">🎨</button>
+      <button class="icon-btn" id="openMixer" type="button" title="Мікшер звуків">🎚️</button>
+      <button class="icon-btn" id="openSettings" type="button" title="Налаштування">⚙️</button>
+    </div>
+  </header>
+
+  <!-- ТРИВОГА -->
+  <section class="alert-bar is-unknown" id="alertBar" role="status" aria-live="polite">
+    <div class="alert-bar__dot"></div>
+    <div class="alert-bar__body">
+      <div class="alert-bar__title" id="alertTitle">Перевіряю статус тривоги…</div>
+      <div class="alert-bar__meta" id="alertMeta"></div>
+    </div>
+    <button class="btn btn--ghost btn--sm" id="alertMute" type="button" hidden>🔇 Тихо</button>
+  </section>
+
+  <!-- ГОЛОВНА КАРТКА -->
+  <section class="hero panel" id="hero">
+    <div class="hero__label" id="heroLabel">Завантаження…</div>
+    <div class="hero__subject" id="heroSubject">&nbsp;</div>
+    <div class="hero__meta" id="heroMeta"></div>
+    <div class="hero__timer" id="heroTimer"></div>
+    <div class="progress" id="heroProgress" hidden><div class="progress__bar" id="heroProgressBar"></div></div>
+    <a class="btn btn--accent hero__join" id="joinBtn" target="_blank" rel="noopener" hidden>Підключитися ↗</a>
+  </section>
+
+  <!-- КОРОТКО ПРО РОЗПОРЯДЖЕННЯ -->
+  <button class="order-note panel" id="orderNote" type="button" hidden>
+    <span class="order-note__icon">📄</span>
+    <span class="order-note__text" id="orderNoteText"></span>
+    <span class="order-note__go">Читати →</span>
+  </button>
+
+  <!-- РОЗКЛАД -->
+  <section class="panel sched">
+    <div class="sched__head">
+      <h2 class="h2">Розклад</h2>
+      <div class="seg" role="tablist">
+        <button class="seg__btn is-active" data-view="day" type="button">День</button>
+        <button class="seg__btn" data-view="week" type="button">Тиждень</button>
+      </div>
+    </div>
+
+    <div class="weeknav">
+      <button class="icon-btn icon-btn--sm" id="prevWeek" type="button" title="Попередній тиждень">‹</button>
+      <div class="weeknav__label">
+        <strong id="weekLabel">…</strong>
+        <span id="weekRange"></span>
+      </div>
+      <button class="icon-btn icon-btn--sm" id="nextWeek" type="button" title="Наступний тиждень">›</button>
+      <button class="btn btn--ghost btn--sm" id="todayBtn" type="button">Сьогодні</button>
+    </div>
+
+    <div class="no-sch" id="noSchedule" hidden></div>
+
+    <div id="dayView">
+      <div class="days" id="days" role="tablist"></div>
+      <div class="day-note" id="dayNote" hidden></div>
+      <div class="lessons" id="lessons"></div>
+    </div>
+
+    <div id="weekView" hidden>
+      <div class="table-wrap"><table class="grid" id="weekGrid"></table></div>
+    </div>
+  </section>
+
+  <!-- РОЗПОРЯДЖЕННЯ -->
+  <section class="panel orders" id="orders">
+    <div class="sched__head">
+      <h2 class="h2">Розпорядження та заміни</h2>
+      <div class="orders__actions">
+        <button class="btn btn--ghost btn--sm" id="reloadOrders" type="button">↻ Оновити</button>
+        <button class="btn btn--ghost btn--sm" id="openOriginal" type="button">Оригінал</button>
+      </div>
+    </div>
+    <div class="orders__status" id="ordersStatus">Завантаження…</div>
+    <div class="seg seg--sm" id="ordersFilter">
+      <button class="seg__btn is-active" data-filter="mine" type="button">Моя група</button>
+      <button class="seg__btn" data-filter="all" type="button">Усі групи</button>
+    </div>
+    <div class="orders__list" id="ordersList"></div>
+  </section>
+
+  <footer class="foot">
+    <span>Посилання на пари можуть змінюватись викладачами. Заміни беруться з розпоряджень коледжу автоматично — але перевіряйте оригінал.</span>
+    <span class="foot__links">
+      <a id="collegeLink" target="_blank" rel="noopener">Сайт коледжу</a>
+      <a id="subsLink" target="_blank" rel="noopener">Заміни на сайті</a>
+    </span>
+  </footer>
+</div>
+
+<!-- ПАНЕЛЬ НАЛАШТУВАНЬ -->
+<div class="drawer-bg" id="drawerBg" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer__head">
+    <div class="tabs" role="tablist">
+      <button class="tabs__btn is-active" data-tab="style" type="button">🎨 Стиль</button>
+      <button class="tabs__btn" data-tab="sound" type="button">🎚️ Звук</button>
+      <button class="tabs__btn" data-tab="alerts" type="button">🚨 Тривоги</button>
+      <button class="tabs__btn" data-tab="other" type="button">⚙️ Інше</button>
+    </div>
+    <button class="icon-btn icon-btn--sm" id="closeDrawer" type="button" title="Закрити">✕</button>
+  </div>
+
+  <div class="drawer__body">
+    <section class="tab" data-tab="style">
+      <h3 class="h3">Стиль сайту</h3>
+      <div class="themes" id="themes"></div>
+    </section>
+
+    <section class="tab" data-tab="sound" hidden>
+      <h3 class="h3">Мікшер ефектів</h3>
+      <p class="hint">Повзунок — гучність каналу, ▶ — прослухати. Браузер дозволяє звук лише після першого кліку по сторінці.</p>
+      <div class="mixer" id="mixer"></div>
+      <div class="meter"><div class="meter__bar" id="meterBar"></div></div>
+    </section>
+
+    <section class="tab" data-tab="alerts" hidden>
+      <h3 class="h3">Повітряна тривога</h3>
+      <label class="field">
+        <span>Область / місто</span>
+        <select id="regionSelect"></select>
+      </label>
+      <label class="switch-row">
+        <input type="checkbox" id="alertRepeat">
+        <span>Повторювати сирену, поки не натиснете «Тихо»</span>
+      </label>
+      <div class="row-btns">
+        <button class="btn btn--ghost btn--sm" id="testAlert" type="button">Тест тривоги (10 с)</button>
+      </div>
+      <p class="hint" id="alertSource"></p>
+      <label class="field">
+        <span>Власний адрес API тривог (необовʼязково)</span>
+        <input type="url" id="alertProxy" placeholder="https://… (JSON у форматі ubilling)">
+      </label>
+    </section>
+
+    <section class="tab" data-tab="other" hidden>
+      <h3 class="h3">Сповіщення</h3>
+      <label class="switch-row">
+        <input type="checkbox" id="notifyToggle">
+        <span>Сповіщення браузера (тривога, початок пари, нові заміни)</span>
+      </label>
+      <label class="field">
+        <span>Нагадувати перед парою за, хв</span>
+        <input type="number" id="soonMin" min="0" max="30" step="1">
+      </label>
+
+      <h3 class="h3">Група</h3>
+      <div class="row-btns">
+        <button class="btn btn--ghost btn--sm" id="changeGroup" type="button">👥 Змінити групу</button>
+      </div>
+
+      <h3 class="h3">Час</h3>
+      <label class="field">
+        <span>Показувати час пар у поясі</span>
+        <select id="tzSelect"></select>
+      </label>
+      <p class="hint">Пари записані за київським часом. Якщо пристрій в іншому часовому поясі, сайт сам перерахує час пар і годинник.</p>
+
+      <h3 class="h3">Робочі суботи</h3>
+      <p class="hint" id="satInfo"></p>
+      <div class="sat-list" id="satList"></div>
+    </section>
+  </div>
+</aside>
+
+<!-- МОДАЛЬНЕ ВІКНО -->
+<div class="modal" id="modal" hidden>
+  <div class="modal__box panel" role="dialog" aria-modal="true">
+    <button class="icon-btn icon-btn--sm modal__close" id="modalClose" type="button" title="Закрити">✕</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
