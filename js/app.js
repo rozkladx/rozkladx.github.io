@@ -558,8 +558,14 @@
     // фільтр «тембру»: прибирає різкі верхні частоти, щоб звук не різав вуха
     const tone = actx.createBiquadFilter();
     tone.type = 'lowpass';
-    tone.frequency.value = 3000;
+    tone.frequency.value = 3600;
     tone.Q.value = 0.5;
+    // легка сатурація: додає звуку «зерна» й ваги — трохи грубіше, без хрипу
+    const drive = actx.createWaveShaper();
+    const dc = new Float32Array(2048);
+    for (let i = 0; i < dc.length; i++) { const x = i / 1024 - 1; dc[i] = Math.tanh(1.8 * x) / Math.tanh(1.8); }
+    drive.curve = dc;
+    drive.oversample = '2x';
     // і зайвий низ, щоб звук був легким, а не гучним «бумом»
     const lowCut = actx.createBiquadFilter();
     lowCut.type = 'highpass';
@@ -568,7 +574,8 @@
     // компенсація гучності після компресора
     const makeup = actx.createGain();
     makeup.gain.value = 1.6;
-    comp.connect(tone);
+    comp.connect(drive);
+    drive.connect(tone);
     tone.connect(lowCut);
     lowCut.connect(makeup);
     makeup.connect(masterGain);
@@ -625,17 +632,6 @@
     return g;
   }
 
-  // м'яка нота: основний тон і ледь чутні обертони, верхні згасають швидше — легко, без дзвону й гулу
-  const BELL_PARTIALS = [[1, 1], [2, 0.1], [3, 0.025]];
-  function bell(dest, f, at, dur, vol, out, partials = BELL_PARTIALS) {
-    const t0 = actx.currentTime + at + 0.02;
-    partials.forEach(([ratio, amp], i) => {
-      const d = dur / (1 + i * 0.55);
-      const g = envGain(dest, t0, vol * amp, 0.012 + i * 0.002, d);   // м'яка атака без «удару»
-      osc('sine', f * ratio, t0, t0 + d, out, (Math.random() - 0.5) * 6).connect(g);
-    });
-  }
-
   // м'який «клік» — короткий відфільтрований шум
   function click(dest, at, vol, freq, out) {
     const t0 = actx.currentTime + at + 0.01;
@@ -657,76 +653,112 @@
   const N = { C4: 261.63, E4: 329.63, G4: 392, A4: 440, C5: 523.25, D5: 587.33, E5: 659.25, G5: 783.99, A5: 880,
     B5: 987.77, C6: 1046.5, D6: 1174.66, E6: 1318.51, G6: 1567.98 };
 
-  // рівна нота з м'якими краями (для тривоги): трикутна хвиля через фільтр — чітко, але не різко
-  function beep(dest, f, at, dur, vol, out) {
-    const t0 = actx.currentTime + at + 0.02;
+  /* --- Тембри: у кожної теми свій «інструмент» ---
+     Нота: voice(dest, f, t0, dur, vol, out, hold) — hold=true тримає рівну гучність (для тривоги),
+     інакше нота згасає. Мелодії сигналів однакові для всіх тем, міняється лише звучання. */
+
+  // нота через фільтр: набір осциляторів → lowpass (з можливим «відкриттям») → огинаюча
+  function synthNote(dest, f, t0, dur, vol, out, hold, o) {
     const lp = actx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 2000;
-    lp.Q.value = 0.6;
+    lp.Q.value = o.q || 0.7;
+    lp.frequency.setValueAtTime(o.cutoff, t0);
+    if (o.sweepTo) lp.frequency.exponentialRampToValueAtTime(o.sweepTo, t0 + Math.max(0.05, dur * 0.8));
     const g = actx.createGain();
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(vol, t0 + 0.02);
-    g.gain.setValueAtTime(vol, t0 + dur - 0.05);
-    g.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+    g.gain.linearRampToValueAtTime(vol, t0 + (o.attack || 0.006));
+    if (hold) {
+      g.gain.setValueAtTime(vol, t0 + dur - 0.04);
+      g.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+    } else {
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    }
     lp.connect(g);
     g.connect(dest);
-    osc('triangle', f, t0, t0 + dur, out).connect(lp);
-    osc('sine', f, t0, t0 + dur, out).connect(lp);
+    for (const [type, ratio, amp, det] of o.layers) {
+      const lg = actx.createGain();
+      lg.gain.value = amp;
+      osc(type, f * ratio, t0, t0 + dur, out, det || 0).connect(lg);
+      lg.connect(lp);
+    }
   }
 
-  const SYNTH = {
-    // тривога: коротке «ті-ту» тричі (~1,8 с) — помітно, але без виття сирени
-    alert: (d) => {
-      const out = [];
-      for (let k = 0; k < 3; k++) {
-        beep(d, N.E5, k * 0.6, 0.24, 0.22, out);
-        beep(d, 493.88, k * 0.6 + 0.27, 0.24, 0.22, out);
-      }
-      return out;
+  // «8-біт»: сходинки замість плавної хвилі
+  let crushCurve = null;
+  function crusher() {
+    if (!crushCurve) {
+      crushCurve = new Float32Array(1024);
+      for (let i = 0; i < 1024; i++) crushCurve[i] = Math.round((i / 512 - 1) * 6) / 6;
+    }
+    const w = actx.createWaveShaper();
+    w.curve = crushCurve;
+    return w;
+  }
+
+  const VOICES = {
+    // Неон: теплий синт — трикутник + розстроєний квадрат, фільтр трохи відкривається
+    neon: (d, f, t0, dur, vol, out, hold) => synthNote(d, f, t0, dur, vol, out, hold, {
+      cutoff: 1400, sweepTo: hold ? 0 : 2200, q: 1.2, attack: 0.008,
+      layers: [['triangle', 1, 0.8], ['square', 1, 0.18, 7], ['sine', 0.5, 0.25]],
+    }),
+    // Кіберпанк: агресивна пилка з «8-біт» зерном і фільтром, що закривається
+    cyber: (d, f, t0, dur, vol, out, hold) => {
+      const cr = crusher();
+      const g = actx.createGain();
+      g.gain.value = 0.8;
+      cr.connect(g);
+      g.connect(d);
+      synthNote(cr, f, t0, dur, vol, out, hold, {
+        cutoff: 3200, sweepTo: hold ? 0 : 700, q: 4, attack: 0.003,
+        layers: [['sawtooth', 1, 0.6, -9], ['sawtooth', 1, 0.6, 9], ['square', 0.5, 0.3]],
+      });
     },
-    // відбій: три легкі ноти вгору
-    clear: (d) => {
-      const out = [];
-      [N.C5, N.E5, N.G5].forEach((f, i) => bell(d, f, i * 0.12, i === 2 ? 0.9 : 0.5, 0.2, out));
-      return out;
+    // Термінал: «пищик» комп'ютера — чистий квадрат, рівна гучність, октавою вище
+    terminal: (d, f, t0, dur, vol, out) => synthNote(d, f * 2, t0, Math.min(dur, 0.22), vol * 0.7, out, true, {
+      cutoff: 3000, q: 0.5, attack: 0.002,
+      layers: [['square', 1, 0.6]],
+    }),
+    // Синтвейв: дві розстроєні пилки + саб, повільна атака, резонансний фільтр — ретро-80-ті
+    synth: (d, f, t0, dur, vol, out, hold) => synthNote(d, f, t0, dur * 1.3, vol, out, hold, {
+      cutoff: 600, sweepTo: hold ? 0 : 2400, q: 5, attack: 0.03,
+      layers: [['sawtooth', 1, 0.5, -12], ['sawtooth', 1, 0.5, 12], ['sine', 0.5, 0.45]],
+    }),
+    // Світлий: маримба — дерев'яний короткий удар
+    light: (d, f, t0, dur, vol, out, hold) => {
+      synthNote(d, f, t0, hold ? dur : dur * 0.7, vol * 0.75, out, hold, {
+        cutoff: 2600, q: 0.5, attack: 0.002,
+        layers: [['sine', 1, 0.9], ['triangle', 1, 0.25], ['sine', 4, 0.12]],
+      });
+      if (!hold) click(d, t0 - actx.currentTime - 0.01, vol * 0.6, 1800, out);
     },
-    // початок пари: дві ноти вгору
-    start: (d) => {
-      const out = [];
-      bell(d, N.C5, 0, 0.5, 0.22, out);
-      bell(d, N.G5, 0.14, 0.8, 0.2, out);
-      return out;
-    },
-    // кінець пари: дві ноти вниз
-    end: (d) => {
-      const out = [];
-      bell(d, N.G5, 0, 0.5, 0.2, out);
-      bell(d, N.C5, 0.15, 0.8, 0.22, out);
-      return out;
-    },
-    // скоро пара: подвійний легкий «дзинь»
-    soon: (d) => {
-      const out = [];
-      bell(d, N.A5, 0, 0.35, 0.16, out);
-      bell(d, N.A5, 0.18, 0.5, 0.14, out);
-      return out;
-    },
-    // нова заміна: коротке «пім-пім» вгору
-    sub: (d) => {
-      const out = [];
-      bell(d, N.D5, 0, 0.35, 0.18, out);
-      bell(d, N.A5, 0.11, 0.55, 0.16, out);
-      return out;
-    },
-    // інтерфейс: ледь чутний «тік»
-    ui: (d) => {
-      const out = [];
-      click(d, 0, 0.25, 1500, out);
-      bell(d, 1100, 0, 0.06, 0.05, out, [[1, 1]]);
-      return out;
-    },
+    // OLED: мінімалізм — коротка приглушена нота
+    mono: (d, f, t0, dur, vol, out, hold) => synthNote(d, f, t0, hold ? dur : dur * 0.6, vol * 1.4, out, hold, {
+      cutoff: 1800, q: 0.5, attack: 0.004,
+      layers: [['triangle', 1, 1]],
+    }),
   };
+
+  // мелодії сигналів: [нота, коли, тривалість, гучність]
+  const B4 = 493.88;
+  const PATTERNS = {
+    alert: { hold: true, notes: [0, 0.6, 1.2].flatMap((k) => [[N.E5, k, 0.24, 0.18], [B4, k + 0.27, 0.24, 0.18]]) },
+    clear: { notes: [[N.C5, 0, 0.5, 0.22], [N.E5, 0.12, 0.5, 0.22], [N.G5, 0.24, 0.9, 0.22]] },
+    start: { notes: [[N.C5, 0, 0.5, 0.24], [N.G5, 0.14, 0.8, 0.22]] },
+    end: { notes: [[N.G5, 0, 0.5, 0.22], [N.C5, 0.15, 0.8, 0.24]] },
+    soon: { notes: [[N.A5, 0, 0.35, 0.18], [N.A5, 0.18, 0.5, 0.16]] },
+    sub: { notes: [[N.D5, 0, 0.35, 0.2], [N.A5, 0.11, 0.55, 0.18]] },
+    ui: { notes: [[1100, 0, 0.06, 0.06]] },
+  };
+
+  function playPattern(id, dest) {
+    const out = [];
+    const voice = VOICES[settings.theme] || VOICES.neon;
+    const p = PATTERNS[id];
+    const now = actx.currentTime + 0.02;
+    for (const [f, at, dur, vol] of p.notes) voice(dest, f, now + at, dur, vol, out, !!p.hold);
+    if (id === 'ui' && settings.theme !== 'terminal') click(dest, 0, 0.2, 1500, out);
+    return out;
+  }
 
   const voices = {};   // id -> [oscillators], щоб зупинити повтор сирени
   async function playSound(id) {
@@ -736,7 +768,7 @@
     if (c.state !== 'running') return;
     if (mix.master.mute || mix[id].mute || !mix[id].vol || !mix.master.vol) return;
     stopSound(id);
-    voices[id] = SYNTH[id](chGain[id]);
+    voices[id] = playPattern(id, chGain[id]);
   }
   function stopSound(id) {
     for (const o of voices[id] || []) { try { o.stop(); } catch (e) { /* вже зупинено */ } }
