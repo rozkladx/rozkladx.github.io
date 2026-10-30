@@ -515,8 +515,8 @@
   let actx = null, masterGain = null, analyser = null, noiseBuf = null;
   const chGain = {};
   const curve = (v) => Math.pow(v / 100, 2);   // квадратична шкала: на слух рівніше
-  // скільки кожного каналу йде в реверберацію (простір)
-  const REVERB_SEND = { alert: 0.22, clear: 0.55, start: 0.45, end: 0.5, soon: 0.4, sub: 0.35, ui: 0.08 };
+  // скільки кожного каналу йде в реверберацію: зовсім трохи — лише щоб звук не був «сухим»
+  const REVERB_SEND = { alert: 0.05, clear: 0.12, start: 0.1, end: 0.1, soon: 0.08, sub: 0.08, ui: 0 };
 
   // імпульс реверберації: стерео-шум, що згасає; високі частоти згасають швидше — звук «теплий»
   function makeImpulse(c, seconds) {
@@ -550,26 +550,27 @@
     comp.attack.value = 0.004;
     comp.release.value = 0.25;
     const verb = actx.createConvolver();
-    verb.buffer = makeImpulse(actx, 2.6);
+    verb.buffer = makeImpulse(actx, 0.9);
     const wet = actx.createGain();
-    wet.gain.value = 0.9;
+    wet.gain.value = 0.6;
     verb.connect(wet);
     wet.connect(comp);
-    // м'який фільтр «тембру»: прибирає різкі верхні частоти, щоб звук не дзвенів
+    // фільтр «тембру»: прибирає різкі верхні частоти, щоб звук не різав вуха
     const tone = actx.createBiquadFilter();
     tone.type = 'lowpass';
-    tone.frequency.value = 2400;
+    tone.frequency.value = 3000;
     tone.Q.value = 0.5;
-    const warm = actx.createBiquadFilter();
-    warm.type = 'lowshelf';
-    warm.frequency.value = 250;
-    warm.gain.value = 4;
+    // і зайвий низ, щоб звук був легким, а не гучним «бумом»
+    const lowCut = actx.createBiquadFilter();
+    lowCut.type = 'highpass';
+    lowCut.frequency.value = 180;
+    lowCut.Q.value = 0.5;
     // компенсація гучності після компресора
     const makeup = actx.createGain();
-    makeup.gain.value = 2;
+    makeup.gain.value = 1.6;
     comp.connect(tone);
-    tone.connect(warm);
-    warm.connect(makeup);
+    tone.connect(lowCut);
+    lowCut.connect(makeup);
     makeup.connect(masterGain);
     masterGain.connect(analyser);
     analyser.connect(actx.destination);
@@ -624,9 +625,8 @@
     return g;
   }
 
-  // дзвін: набір негармонійних обертонів (як у металевого дзвіночка), верхні згасають швидше
-  // мало верхніх обертонів — звук м'який, як у вібрафона, а не дзвінкий
-  const BELL_PARTIALS = [[0.5, 0.5], [1, 1], [2, 0.22], [3, 0.08], [4.07, 0.03]];
+  // м'яка нота: основний тон і ледь чутні обертони, верхні згасають швидше — легко, без дзвону й гулу
+  const BELL_PARTIALS = [[1, 1], [2, 0.1], [3, 0.025]];
   function bell(dest, f, at, dur, vol, out, partials = BELL_PARTIALS) {
     const t0 = actx.currentTime + at + 0.02;
     partials.forEach(([ratio, amp], i) => {
@@ -634,24 +634,6 @@
       const g = envGain(dest, t0, vol * amp, 0.012 + i * 0.002, d);   // м'яка атака без «удару»
       osc('sine', f * ratio, t0, t0 + d, out, (Math.random() - 0.5) * 6).connect(g);
     });
-  }
-
-  // теплий «пед»: кілька розстроєних пилок через фільтр, що повільно відкривається
-  function pad(dest, freqs, at, dur, vol, out) {
-    const t0 = actx.currentTime + at + 0.02;
-    const lp = actx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.Q.value = 0.7;
-    lp.frequency.setValueAtTime(300, t0);
-    lp.frequency.exponentialRampToValueAtTime(2600, t0 + dur * 0.45);
-    lp.frequency.exponentialRampToValueAtTime(500, t0 + dur);
-    const g = actx.createGain();
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(vol, t0 + dur * 0.25);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    lp.connect(g);
-    g.connect(dest);
-    for (const f of freqs) for (const det of [-9, 0, 9]) osc('sawtooth', f, t0, t0 + dur, out, det).connect(lp);
   }
 
   // м'який «клік» — короткий відфільтрований шум
@@ -675,95 +657,73 @@
   const N = { C4: 261.63, E4: 329.63, G4: 392, A4: 440, C5: 523.25, D5: 587.33, E5: 659.25, G5: 783.99, A5: 880,
     B5: 987.77, C6: 1046.5, D6: 1174.66, E6: 1318.51, G6: 1567.98 };
 
+  // рівна нота з м'якими краями (для тривоги): трикутна хвиля через фільтр — чітко, але не різко
+  function beep(dest, f, at, dur, vol, out) {
+    const t0 = actx.currentTime + at + 0.02;
+    const lp = actx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 2000;
+    lp.Q.value = 0.6;
+    const g = actx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(vol, t0 + 0.02);
+    g.gain.setValueAtTime(vol, t0 + dur - 0.05);
+    g.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+    lp.connect(g);
+    g.connect(dest);
+    osc('triangle', f, t0, t0 + dur, out).connect(lp);
+    osc('sine', f, t0, t0 + dur, out).connect(lp);
+  }
+
   const SYNTH = {
-    // сирена: розстроєні пилки + квадрат октавою нижче, фільтр «відкривається» разом із тоном, вібрато
+    // тривога: коротке «ті-ту» тричі (~1,8 с) — помітно, але без виття сирени
     alert: (d) => {
       const out = [];
-      const t0 = actx.currentTime + 0.02;
-      const cycles = 2, half = 1.5, end = t0 + cycles * half * 2;
-      const shaper = actx.createWaveShaper();
-      const k = new Float32Array(1024);
-      for (let i = 0; i < k.length; i++) { const x = i / 512 - 1; k[i] = Math.tanh(2.2 * x); }
-      shaper.curve = k;
-      const lp = actx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.Q.value = 1.2;
-      const g = actx.createGain();
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.linearRampToValueAtTime(0.16, t0 + 0.25);
-      g.gain.setValueAtTime(0.16, end - 0.5);
-      g.gain.exponentialRampToValueAtTime(0.0001, end);
-      shaper.connect(lp);
-      lp.connect(g);
-      g.connect(d);
-      const voicesOsc = [osc('sawtooth', 440, t0, end, out, -8), osc('sawtooth', 440, t0, end, out, 8), osc('square', 220, t0, end, out)];
-      const subGain = actx.createGain();
-      subGain.gain.value = 0.35;
-      voicesOsc[2].connect(subGain);
-      subGain.connect(shaper);
-      voicesOsc[0].connect(shaper);
-      voicesOsc[1].connect(shaper);
-      // вібрато
-      const lfo = osc('sine', 5.5, t0, end, out);
-      const lfoAmt = actx.createGain();
-      lfoAmt.gain.value = 9;
-      lfo.connect(lfoAmt);
-      for (const o of voicesOsc) lfoAmt.connect(o.frequency);
-      // підйом і спад тону
-      for (let i = 0; i < cycles; i++) {
-        const a = t0 + i * half * 2;
-        for (const o of voicesOsc) {
-          const m = o.type === 'square' ? 0.5 : 1;
-          o.frequency.setValueAtTime(380 * m, a);
-          o.frequency.exponentialRampToValueAtTime(920 * m, a + half);
-          o.frequency.exponentialRampToValueAtTime(380 * m, a + half * 2);
-        }
-        lp.frequency.setValueAtTime(900, a);
-        lp.frequency.exponentialRampToValueAtTime(2000, a + half);
-        lp.frequency.exponentialRampToValueAtTime(900, a + half * 2);
+      for (let k = 0; k < 3; k++) {
+        beep(d, N.E5, k * 0.6, 0.24, 0.22, out);
+        beep(d, 493.88, k * 0.6 + 0.27, 0.24, 0.22, out);
       }
       return out;
     },
-    // відбій: теплий мажорний акорд + м'які ноти вгору
+    // відбій: три легкі ноти вгору
     clear: (d) => {
       const out = [];
-      pad(d, [N.C4 / 2, N.E4 / 2, N.G4 / 2, N.C4], 0, 3.4, 0.045, out);
-      [N.C5, N.E5, N.G5].forEach((f, i) => bell(d, f, 0.3 + i * 0.24, 2.4, 0.1, out));
-      bell(d, N.C4, 0, 3, 0.14, out);
+      [N.C5, N.E5, N.G5].forEach((f, i) => bell(d, f, i * 0.12, i === 2 ? 0.9 : 0.5, 0.2, out));
       return out;
     },
-    // початок пари: висхідне арпеджіо
+    // початок пари: дві ноти вгору
     start: (d) => {
       const out = [];
-      [N.C4, N.E4, N.G4].forEach((f, i) => bell(d, f, i * 0.14, 1.8, 0.2, out));
-      bell(d, N.C5, 0.44, 2.4, 0.16, out);
+      bell(d, N.C5, 0, 0.5, 0.22, out);
+      bell(d, N.G5, 0.14, 0.8, 0.2, out);
       return out;
     },
-    // кінець пари: низхідна фраза, низький довгий тон
+    // кінець пари: дві ноти вниз
     end: (d) => {
       const out = [];
-      [N.G4, N.E4, N.C4].forEach((f, i) => bell(d, f, i * 0.17, 1.7, 0.2, out));
-      bell(d, N.C4 / 2, 0.52, 3, 0.24, out);
+      bell(d, N.G5, 0, 0.5, 0.2, out);
+      bell(d, N.C5, 0.15, 0.8, 0.22, out);
       return out;
     },
-    // скоро пара: два м'які удари
+    // скоро пара: подвійний легкий «дзинь»
     soon: (d) => {
       const out = [];
-      [0, 0.55].forEach((at) => { bell(d, N.A4, at, 1.3, 0.18, out); bell(d, N.E5, at + 0.13, 1.4, 0.12, out); });
+      bell(d, N.A5, 0, 0.35, 0.16, out);
+      bell(d, N.A5, 0.18, 0.5, 0.14, out);
       return out;
     },
-    // нова заміна: короткий двотональний сигнал повідомлення
+    // нова заміна: коротке «пім-пім» вгору
     sub: (d) => {
       const out = [];
-      bell(d, N.D5, 0, 1, 0.17, out);
-      bell(d, N.A5, 0.15, 1.4, 0.13, out);
+      bell(d, N.D5, 0, 0.35, 0.18, out);
+      bell(d, N.A5, 0.11, 0.55, 0.16, out);
       return out;
     },
-    // інтерфейс: тихий приглушений «тук»
+    // інтерфейс: ледь чутний «тік»
     ui: (d) => {
       const out = [];
-      click(d, 0, 0.35, 900, out);
-      bell(d, 620, 0, 0.12, 0.07, out, [[1, 1], [2, 0.15]]);
+      click(d, 0, 0.25, 1500, out);
+      bell(d, 1100, 0, 0.06, 0.05, out, [[1, 1]]);
       return out;
     },
   };
