@@ -171,7 +171,27 @@ begin
    where id = p_user and role <> 'admin';
 end $$;
 
+-- якщо профілю немає (акаунт створено раніше за тригер) — створити з даних реєстрації
+create or replace function public.ensure_profile() returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return; end if;
+  insert into public.profiles (id, email, full_name, group_name)
+  select u.id, u.email,
+         coalesce(u.raw_user_meta_data->>'full_name', ''),
+         coalesce(nullif(u.raw_user_meta_data->>'group_name', ''), '?')
+    from auth.users u where u.id = auth.uid()
+  on conflict (id) do nothing;
+end $$;
+
+-- права на таблиці (у нових проєктах Supabase їх не завжди видає автоматично); доступ далі обмежує RLS
+grant usage on schema public to anon, authenticated;
+grant select on public.schedule_overrides to anon;
+grant select, insert, update, delete on public.profiles, public.lesson_links, public.schedule_overrides, public.group_tokens to authenticated;
+
 -- права для ролей Supabase
+grant execute on function public.ensure_profile() to authenticated;
+grant execute on function public.my_role(), public.my_group(), public.is_admin() to anon, authenticated;
 grant execute on function public.group_by_token(text) to anon, authenticated;
 grant execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text) to authenticated;
 revoke execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text) from anon;

@@ -1728,8 +1728,17 @@
 
   async function loadProfile() {
     auth.profile = null;
+    auth.profileError = null;
     if (!sb || !auth.user) return;
-    const { data } = await sb.from('profiles').select('*').eq('id', auth.user.id).maybeSingle();
+    const read = () => sb.from('profiles').select('*').eq('id', auth.user.id).maybeSingle();
+    let { data, error } = await read();
+    // профілю немає (акаунт створено до тригера або тригер не спрацював) — створюємо з даних реєстрації
+    if (!error && !data) {
+      const r = await sb.rpc('ensure_profile');
+      if (r.error) error = r.error;
+      else ({ data, error } = await read());
+    }
+    if (error) auth.profileError = error.message;
     auth.profile = data || null;
   }
 
@@ -1855,12 +1864,25 @@
     box.append(field('Пароль', pass), go, msg);
   }
 
-  const logoutBtn = () => btn('Вийти', 'btn--ghost btn--sm', async () => { await sb.auth.signOut(); closeModal(); toast('Ви вийшли'); });
+  // вихід завжди спрацьовує: спершу локально (без сервера), сесію на сервері закриваємо «у фоні»
+  async function logout() {
+    try { await sb.auth.signOut({ scope: 'local' }); } catch (e) { /* все одно чистимо нижче */ }
+    try { Object.keys(localStorage).filter((k) => /^sb-.*-auth-token/.test(k)).forEach((k) => localStorage.removeItem(k)); } catch (e) { /* не критично */ }
+    auth.user = null;
+    auth.profile = null;
+    closeModal();
+    toast('Ви вийшли');
+    await refreshAccess();
+  }
+  const logoutBtn = () => btn('Вийти', 'btn--ghost btn--sm', logout);
 
   function renderNoProfile(box) {
-    box.appendChild(el('h3', 'modal__title', 'Профіль не знайдено'));
-    box.appendChild(el('p', 'hint', 'Спробуйте вийти й увійти ще раз або напишіть адміністратору.'));
-    box.appendChild(logoutBtn());
+    box.appendChild(el('h3', 'modal__title', 'Не вдалося завантажити профіль'));
+    box.appendChild(el('p', 'hint', `Ви ввійшли як ${auth.user.email}, але база не віддала ваш профіль.`));
+    if (auth.profileError) box.appendChild(el('p', 'acc__msg is-bad', 'Відповідь бази: ' + auth.profileError));
+    const row = el('div', 'row-btns');
+    row.append(btn('Спробувати ще раз', 'btn--accent btn--sm', async () => { await loadProfile(); await refreshAccess(); openAccount(); }), logoutBtn());
+    box.appendChild(row);
   }
 
   function renderPending(box) {
