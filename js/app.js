@@ -1384,8 +1384,9 @@
     renderBrand();
     playSound('ui');
     toast('Група: ' + G.title);
-    loadOverrides().then(renderAll);
+    refreshAccess().then(() => { if (isAdmin() && reopenAdminAfterPick) { reopenAdminAfterPick = false; openAccount(); } });
   }
+  let reopenAdminAfterPick = false;   // адмін перейшов до вибору групи з панелі — повернути його в панель
 
   function renderBrand() {
     $('groupName').textContent = (lockedGroup ? '🔒 ' : '') + G.title;
@@ -1690,6 +1691,12 @@
     privateLinks = {};
     lockedGroup = null;
     if (!sb) return;
+    // адмін не прив'язаний до групи: бачить і редагує ту, яку зараз відкрив
+    if (isAdmin()) {
+      const { data } = await sb.from('lesson_links').select('teacher_key,url').eq('group_name', G.name);
+      privateLinks = Object.fromEntries((data || []).map((r) => [r.teacher_key, r.url]));
+      return;
+    }
     // староста бачить і редагує свою групу
     if (isStarosta()) {
       lockedGroup = auth.profile.group_name;
@@ -1902,11 +1909,14 @@
     head.append(el('h3', 'modal__title', `Староста ${p.group_name}`), logoutBtn());
     box.appendChild(head);
     box.appendChild(el('p', 'hint', `${p.full_name || p.email} · редагувати можна лише свою групу.`));
+    renderGroupTools(box, p.group_name);
+  }
 
-    // 1. секретне посилання групи
+  // інструменти групи (староста — своєї, адмін — будь-якої): секретне посилання, посилання на пари, правки
+  function renderGroupTools(box, groupName) {
     const sec = el('section', 'acc__sec');
     sec.appendChild(el('h4', 'h3', '🔗 Посилання для групи'));
-    sec.appendChild(el('p', 'hint', 'Надішліть його в чат групи. Хто відкриє — побачить посилання на пари саме вашої групи, а сайт закріпиться за нею.'));
+    sec.appendChild(el('p', 'hint', 'Надішліть його в чат групи. Хто відкриє — побачить посилання на пари саме цієї групи, а сайт закріпиться за нею.'));
     const linkOut = inp('text', 'завантаження…');
     linkOut.readOnly = true;
     const lmsg = msgBox();
@@ -1915,21 +1925,21 @@
     });
     const rotate = btn('Нове посилання', 'btn--ghost btn--sm', () => busy(rotate, async () => {
       if (!confirm('Старе посилання перестане працювати. Створити нове?')) return;
-      const { data, error } = await sb.rpc('rotate_group_token');
+      const { data, error } = await sb.rpc('rotate_group_token_for', { p_group: groupName });
       if (error) return say(lmsg, 'Помилка: ' + error.message, true);
       linkOut.value = groupLink(data);
       say(lmsg, 'Нове посилання створено — надішліть його групі');
     }));
-    sb.rpc('my_group_token').then(({ data, error }) => { linkOut.value = error ? '' : groupLink(data); if (error) say(lmsg, 'Помилка: ' + error.message, true); });
+    sb.rpc('get_group_token', { p_group: groupName }).then(({ data, error }) => {
+      linkOut.value = error ? '' : groupLink(data);
+      if (error) say(lmsg, 'Помилка: ' + error.message, true);
+    });
     const lr = el('div', 'row-btns');
     lr.append(copy, rotate);
     sec.append(linkOut, lr, lmsg);
     box.appendChild(sec);
-
-    // 2. посилання на пари
-    box.appendChild(renderLinksEditor(p.group_name));
-    // 3. правки розкладу
-    box.appendChild(renderOverridesEditor(p.group_name));
+    box.appendChild(renderLinksEditor(groupName));
+    box.appendChild(renderOverridesEditor(groupName));
   }
 
   // список «викладач → посилання» для всіх викладачів групи
@@ -2045,24 +2055,62 @@
   }
 
   /* ---------- Панель адміністратора ---------- */
+  let adminTab = 'group';
+  const ROLE_LABEL = { pending: 'Заявка', starosta: 'Староста', admin: 'Адмін', rejected: 'Відхилено' };
+
+  // адмін: без прив'язки до групи; інструменти старости для будь-якої групи + керування всіма акаунтами
   function renderAdmin(box) {
     const head = el('div', 'acc__head');
     head.append(el('h3', 'modal__title', 'Адміністратор'), logoutBtn());
     box.appendChild(head);
+    box.appendChild(el('p', 'hint', `${auth.profile.full_name || auth.profile.email} · без прив'язки до групи, доступ до всіх груп`));
+    const tabs = el('div', 'seg seg--sm acc__tabs');
+    tabs.append(
+      btn('🏫 Група', 'seg__btn' + (adminTab === 'group' ? ' is-active' : ''), () => { adminTab = 'group'; openAccount(); }),
+      btn('👥 Акаунти', 'seg__btn' + (adminTab === 'users' ? ' is-active' : ''), () => { adminTab = 'users'; openAccount(); }),
+    );
+    box.appendChild(tabs);
+    if (adminTab === 'group') renderAdminGroup(box);
+    else renderAdminUsers(box);
+  }
+
+  function renderAdminGroup(box) {
+    const pick = el('div', 'acc__orow');
+    pick.appendChild(el('span', null, `Редагуєте групу: ${G.title}`));
+    pick.appendChild(btn('Змінити групу', 'btn--ghost btn--sm', () => { reopenAdminAfterPick = true; closeModal(); openGroupPicker(); }));
+    box.appendChild(pick);
+    renderGroupTools(box, G.name);
+  }
+
+  function renderAdminUsers(box) {
     const msg = msgBox();
     const pend = el('section', 'acc__sec');
-    pend.appendChild(el('h4', 'h3', '📝 Заявки старост'));
+    pend.appendChild(el('h4', 'h3', '📝 Нові заявки'));
     const pendList = el('div', 'acc__olist');
-    const st = el('section', 'acc__sec');
-    st.appendChild(el('h4', 'h3', '👥 Старости'));
-    const stList = el('div', 'acc__olist');
+    const all = el('section', 'acc__sec');
+    all.appendChild(el('h4', 'h3', '👥 Усі акаунти'));
+    all.appendChild(el('p', 'hint', 'Роль і групу можна змінити будь-кому, крім зняття адмінки з самого себе.'));
+    const allList = el('div', 'acc__olist');
+    const roleSelect = (value) => {
+      const s = document.createElement('select');
+      for (const [v, t] of Object.entries(ROLE_LABEL)) { const o = el('option', null, t); o.value = v; s.appendChild(o); }
+      s.value = value;
+      return s;
+    };
+    const setRole = async (p, role, group) => {
+      const { error } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: role, p_group: group || null });
+      if (error) { say(msg, 'Помилка: ' + error.message, true); return false; }
+      say(msg, `${p.full_name || p.email}: ${ROLE_LABEL[role]}${role === 'starosta' ? ' ' + (group || p.group_name) : ''}`);
+      if (p.id === auth.user.id) { await loadProfile(); await refreshAccess(); }
+      draw();
+      return true;
+    };
     const draw = async () => {
-      const { data, error } = await sb.from('profiles').select('*').neq('role', 'admin').order('created_at', { ascending: false });
+      const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
       if (error) return say(msg, 'Помилка: ' + error.message, true);
       pendList.textContent = '';
-      stList.textContent = '';
+      allList.textContent = '';
       const pending = (data || []).filter((p) => p.role === 'pending');
-      const staros = (data || []).filter((p) => p.role === 'starosta');
       if (!pending.length) pendList.appendChild(el('div', 'hint', 'Нових заявок немає.'));
       for (const p of pending) {
         const r = el('div', 'acc__orow acc__orow--wrap');
@@ -2071,36 +2119,45 @@
         const grp = groupSelect(p.group_name);
         const ok = btn('Підтвердити', 'btn--accent btn--sm', () => busy(ok, async () => {
           if (!grp.value) return say(msg, 'Оберіть групу', true);
-          const { error: e } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: 'starosta', p_group: grp.value });
-          if (e) return say(msg, 'Помилка: ' + e.message, true);
-          say(msg, `${p.full_name || p.email} — староста ${grp.value}`);
-          draw();
+          await setRole(p, 'starosta', grp.value);
         }));
-        const no = btn('Відхилити', 'btn--ghost btn--sm', () => busy(no, async () => {
-          const { error: e } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: 'rejected', p_group: null });
-          if (e) return say(msg, 'Помилка: ' + e.message, true);
-          draw();
-        }));
+        const no = btn('Відхилити', 'btn--ghost btn--sm', () => busy(no, () => setRole(p, 'rejected')));
         r.append(info, grp, ok, no);
         pendList.appendChild(r);
       }
-      if (!staros.length) stList.appendChild(el('div', 'hint', 'Підтверджених старост ще немає.'));
-      for (const p of staros.sort((a, b) => a.group_name.localeCompare(b.group_name, 'uk'))) {
-        const r = el('div', 'acc__orow');
-        r.appendChild(el('span', null, `${p.group_name} — ${p.full_name || ''} (${p.email})`));
-        const off = btn('Зняти роль', 'btn--ghost btn--sm', () => busy(off, async () => {
-          if (!confirm(`Зняти роль старости з ${p.full_name || p.email}?`)) return;
-          const { error: e } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: 'rejected', p_group: null });
-          if (e) return say(msg, 'Помилка: ' + e.message, true);
-          draw();
+      for (const p of data || []) {
+        const me = p.id === auth.user.id;
+        const r = el('div', 'acc__orow acc__orow--wrap');
+        const info = el('div');
+        info.append(el('strong', null, (p.full_name || '—') + (me ? ' (ви)' : '')), el('div', 'hint', p.email));
+        const role = roleSelect(p.role);
+        const grp = groupSelect(p.group_name || '');
+        const syncGrp = () => { grp.disabled = role.value === 'admin'; };
+        role.addEventListener('change', syncGrp);
+        syncGrp();
+        const saveB = btn('Зберегти', 'btn--accent btn--sm', () => busy(saveB, async () => {
+          if (role.value === 'starosta' && !grp.value) return say(msg, 'Старості потрібна група', true);
+          if (me && role.value !== 'admin') return say(msg, 'Не можна зняти адмінку з самого себе', true);
+          if (role.value === 'admin' && !me && !confirm(`Дати ${p.full_name || p.email} повні права адміністратора?`)) return;
+          await setRole(p, role.value, role.value === 'admin' ? null : grp.value);
         }));
-        r.appendChild(off);
-        stList.appendChild(r);
+        r.append(info, role, grp, saveB);
+        if (!me) {
+          const delB = btn('Видалити', 'btn--ghost btn--sm', () => busy(delB, async () => {
+            if (!confirm(`Повністю видалити акаунт ${p.email}? Відновити не можна.`)) return;
+            const { error: e } = await sb.rpc('admin_delete_user', { p_user: p.id });
+            if (e) return say(msg, 'Помилка: ' + e.message, true);
+            say(msg, `Акаунт ${p.email} видалено`);
+            draw();
+          }));
+          r.appendChild(delB);
+        }
+        allList.appendChild(r);
       }
     };
     pend.appendChild(pendList);
-    st.appendChild(stList);
-    box.append(msg, pend, st);
+    all.appendChild(allList);
+    box.append(msg, pend, all);
     draw();
   }
 

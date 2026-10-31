@@ -158,17 +158,60 @@ begin
   );
 end $$;
 
--- ---------- Адмін: підтвердження старост ----------
+-- ---------- Секретне посилання будь-якої групи: староста — своєї, адмін — будь-якої ----------
+create or replace function public.get_group_token(p_group text default null) returns text
+language plpgsql security definer set search_path = public as $$
+declare g text := coalesce(nullif(p_group, ''), public.my_group()); t text;
+begin
+  if g is null or not (public.is_admin() or g = public.my_group()) then raise exception 'Немає доступу до цієї групи'; end if;
+  select token into t from public.group_tokens where group_name = g;
+  if t is null then
+    t := replace(gen_random_uuid()::text, '-', '');
+    insert into public.group_tokens (group_name, token) values (g, t);
+  end if;
+  return t;
+end $$;
+
+create or replace function public.rotate_group_token_for(p_group text default null) returns text
+language plpgsql security definer set search_path = public as $$
+declare g text := coalesce(nullif(p_group, ''), public.my_group()); t text := replace(gen_random_uuid()::text, '-', '');
+begin
+  if g is null or not (public.is_admin() or g = public.my_group()) then raise exception 'Немає доступу до цієї групи'; end if;
+  insert into public.group_tokens (group_name, token, updated_at) values (g, t, now())
+  on conflict (group_name) do update set token = excluded.token, updated_at = now();
+  return t;
+end $$;
+
+-- ---------- Адмін: керування акаунтами без обмежень ----------
+-- адмін не прив'язаний до групи
+alter table public.profiles alter column group_name drop not null;
+update public.profiles set group_name = null where role = 'admin';
+
+drop function if exists public.admin_set_role(uuid, text, text);
 create or replace function public.admin_set_role(p_user uuid, p_role text, p_group text default null) returns void
 language plpgsql security definer set search_path = public as $$
 begin
   if not public.is_admin() then raise exception 'Лише адмін'; end if;
-  if p_role not in ('pending', 'starosta', 'rejected') then raise exception 'Невідома роль'; end if;
+  if p_role not in ('pending', 'starosta', 'admin', 'rejected') then raise exception 'Невідома роль'; end if;
+  if p_user = auth.uid() and p_role <> 'admin' then raise exception 'Не можна зняти роль адміна з самого себе'; end if;
+  if p_role = 'starosta' and nullif(p_group, '') is null
+     and (select group_name from public.profiles where id = p_user) is null then
+    raise exception 'Для старости потрібна група';
+  end if;
   update public.profiles
      set role = p_role,
-         group_name = coalesce(nullif(p_group, ''), group_name),
-         approved_at = case when p_role = 'starosta' then now() else approved_at end
-   where id = p_user and role <> 'admin';
+         group_name = case when p_role = 'admin' then null else coalesce(nullif(p_group, ''), group_name) end,
+         approved_at = case when p_role in ('starosta', 'admin') then now() else approved_at end
+   where id = p_user;
+end $$;
+
+-- видалити акаунт повністю (окрім власного)
+create or replace function public.admin_delete_user(p_user uuid) returns void
+language plpgsql security definer set search_path = public, auth as $$
+begin
+  if not public.is_admin() then raise exception 'Лише адмін'; end if;
+  if p_user = auth.uid() then raise exception 'Не можна видалити власний акаунт'; end if;
+  delete from auth.users where id = p_user;
 end $$;
 
 -- якщо профілю немає (акаунт створено раніше за тригер) — створити з даних реєстрації
@@ -193,8 +236,10 @@ grant select, insert, update, delete on public.profiles, public.lesson_links, pu
 grant execute on function public.ensure_profile() to authenticated;
 grant execute on function public.my_role(), public.my_group(), public.is_admin() to anon, authenticated;
 grant execute on function public.group_by_token(text) to anon, authenticated;
-grant execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text) to authenticated;
-revoke execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text) from anon;
+grant execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text),
+  public.get_group_token(text), public.rotate_group_token_for(text), public.admin_delete_user(uuid) to authenticated;
+revoke execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text),
+  public.get_group_token(text), public.rotate_group_token_for(text), public.admin_delete_user(uuid) from anon, public;
 
 -- =====================================================================
 -- ПІСЛЯ того, як ви самі зареєструєтесь на сайті, зробіть себе адміном
