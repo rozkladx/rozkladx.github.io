@@ -112,26 +112,71 @@
   }
 
   /* ---------- Групи ---------- */
-  const COURSE_ROMAN = { 1: 'I', 2: 'II', 3: 'III', 4: 'IV' };
-  const ALL_GROUPS = Object.entries(C.groups).flatMap(([course, list]) => list.map((name) => ({ name, course: Number(course) })));
+  // Розклади всіх груп збирає GitHub Actions з PDF на сайті коледжу → data/schedules.json
+  let ALL_GROUPS = [];        // [{name, course, title, pdf, schedule, error}]
+  let schedulesMeta = { generatedAt: null, error: null };
   const courseOf = (name) => { const m = String(name).match(/(\d)\d\b/); return m ? Number(m[1]) : 4; };
+  // «група П-782-42» → «П-782-42»
+  const titleOf = (g) => (g.title || '').replace(/^груп[аи]\s+/i, '').trim() || g.name;
+
+  async function loadSchedules() {
+    const ver = (document.querySelector('meta[name="app-version"]') || {}).content || '';
+    try {
+      const r = await fetch('data/schedules.json?v=' + encodeURIComponent(ver) + '&t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      save('rz_schedules', j);
+      applySchedules(j);
+    } catch (e) {
+      schedulesMeta.error = String(e.message || e);
+      applySchedules(load('rz_schedules', { groups: [] }));   // офлайн — остання збережена копія
+    }
+  }
+  function applySchedules(j) {
+    ALL_GROUPS = (j.groups || []).map((g) => ({ ...g, title: titleOf(g) }));
+    schedulesMeta.generatedAt = j.generatedAt || null;
+  }
 
   let G = null;   // поточна група
   function setGroup(name) {
-    const g = ALL_GROUPS.find((x) => x.name === name) || { name, course: courseOf(name) };
-    const sch = C.schedules[name] || null;
+    const g = ALL_GROUPS.find((x) => x.name === name) || { name, course: courseOf(name), title: name };
     G = {
-      ...g,
-      title: (sch && sch.title) || name,
-      sch,
+      name: g.name,
+      course: g.course,
+      title: g.title || name,
+      sch: g.schedule ? { schedule: g.schedule } : null,
+      stale: !!g.error,
       // як група пишеться в розпорядженнях: «П42»; спільний розклад «А-31, А-30» → обидві
       codes: name.split(/[,;]/).map((s) => normGroup(s)).filter(Boolean),
-      pdf: encodeURI(C.pdfBase + COURSE_ROMAN[g.course] + ' курс/' + (C.pdfFiles[name] || `Розклад ${name}.pdf`)),
+      pdf: g.pdf || C.links.schedule,
     };
     settings.group = name;
     saveSettings();
   }
-  const groupSubjects = () => (G.sch ? Object.values(G.sch.subjects) : []);
+
+  // посилання на пару: з data.js → links[група]; ключ «Прізвище» або «Прізвище|початок назви предмета»
+  function linkFor(subject, teacher) {
+    const map = (C.links.lessons || {})[G.name] || {};
+    const sn = surname(teacher);
+    if (!sn) return '';
+    let best = '';
+    for (const [key, url] of Object.entries(map)) {
+      const [ks, kSubj] = key.split('|');
+      if (norm(ks) !== sn) continue;
+      if (kSubj) { if (norm(subject).startsWith(norm(kSubj))) return url; }
+      else if (!best) best = url;
+    }
+    return best;
+  }
+  // усі предмети групи (для підбору повних назв у замінах)
+  const groupSubjects = () => {
+    if (!G.sch) return [];
+    const seen = new Map();
+    for (const w of Object.values(G.sch.schedule)) for (const day of Object.values(w)) for (const l of day) {
+      if (l && !seen.has(l.n + '|' + l.t)) seen.set(l.n + '|' + l.t, { n: l.n, t: l.t, l: linkFor(l.n, l.t) });
+    }
+    return [...seen.values()];
+  };
 
   /* ---------- Тижні та робочі суботи ---------- */
   function weekNumberFor(key) {
@@ -210,7 +255,8 @@
       (rawSubject && words(rawSubject).length > 1 ? pick(groupSubjects()) : null);
     if (hit) return { name: hit.n, link: surname(hit.t) === surname(teacher) ? hit.l : '' };
     const t = String(rawSubject || '').trim();
-    return { name: t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Заняття', link: '' };
+    const name = t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Заняття';
+    return { name, link: linkFor(name, teacher) };
   }
 
   /* ---------- Пари на дату ---------- */
@@ -219,9 +265,8 @@
     const out = new Map();
     if (plan && G.sch) {
       const day = (G.sch.schedule[plan.week] || {})[plan.day] || [];
-      day.forEach((code, i) => {
-        const s = code && G.sch.subjects[code];
-        if (s) out.set(i + 1, { no: i + 1, subject: s.n, teacher: s.t, link: s.l });
+      day.forEach((s, i) => {
+        if (s) out.set(i + 1, { no: i + 1, subject: s.n, teacher: s.t, link: linkFor(s.n, s.t) });
       });
     }
 
@@ -396,6 +441,22 @@
     return o.rows.filter(isMine).map((r) => ({ ...r, order: o }));
   }
   const isMine = (r) => r.group.split(/[,;/]/).some((g) => G.codes.includes(normGroup(g)));
+
+  // спільний архів розпоряджень (його веде GitHub Actions у data/orders.json) — видно й старі, які вже зникли з Drive
+  async function loadOrderArchive() {
+    try {
+      const r = await fetch('data/orders.json?t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' });
+      if (!r.ok) return;
+      const j = await r.json();
+      const map = new Map(orders.map((o) => [o.id, o]));
+      for (const a of j.orders || []) {
+        const o = parseOrder(parseCSV(a.csv));
+        if ((o.rows.length || o.dateKey) && !map.has(o.id)) map.set(o.id, { ...o, fetchedAt: Date.parse(a.fetchedAt) || 0 });
+      }
+      orders = [...map.values()].sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || '') || (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 80);
+      save('rz_orders', orders);
+    } catch (e) { /* архів необов'язковий */ }
+  }
 
   const SHEETS = ['', 'Лист2', 'Лист3'];
   async function fetchOrders(manual) {
@@ -1095,13 +1156,19 @@
     t.appendChild(tb);
   }
 
+  // звідки розклад: PDF коледжу (і коли його востаннє розбирали) або попередження, якщо розібрати не вдалося
   function renderNoSchedule() {
     const box = $('noSchedule');
-    box.hidden = !!G.sch;
-    if (G.sch) return;
+    box.hidden = false;
     box.textContent = '';
-    box.appendChild(el('div', null, `Повного розкладу ${G.name} на сайті ще немає — тут видно лише заміни з розпоряджень коледжу.`));
-    const a = el('a', 'btn btn--accent btn--sm', 'Офіційний розклад (PDF) ↗');
+    box.classList.toggle('no-sch--ok', !!G.sch && !G.stale);
+    const upd = schedulesMeta.generatedAt ? fmt(viewTZ(), { day: '2-digit', month: '2-digit', ...HM }).format(new Date(schedulesMeta.generatedAt)) : '';
+    let text;
+    if (!G.sch) text = `Не вдалося прочитати розклад ${G.title} з сайту коледжу — тут видно лише заміни з розпоряджень.`;
+    else if (G.stale) text = `Розклад ${G.title} — з попередньої перевірки: свіжий PDF коледжу не вдалося прочитати.`;
+    else text = `Розклад з офіційного PDF коледжу${upd ? ' · перевірено ' + upd : ''}`;
+    box.appendChild(el('div', null, text));
+    const a = el('a', G.sch && !G.stale ? 'no-sch__link' : 'btn btn--accent btn--sm', G.sch && !G.stale ? 'PDF ↗' : 'Офіційний розклад (PDF) ↗');
     a.href = G.pdf;
     a.target = '_blank';
     a.rel = 'noopener';
@@ -1256,20 +1323,20 @@
       seg.querySelectorAll('.seg__btn').forEach((b) => b.classList.toggle('is-active', Number(b.dataset.c) === course && !search.value));
       list.textContent = '';
       const q = normGroup(search.value);
-      const groups = q ? ALL_GROUPS.filter((g) => normGroup(g.name).includes(q)) : ALL_GROUPS.filter((g) => g.course === course);
-      if (!groups.length) list.appendChild(el('div', 'empty empty--sm', 'Нічого не знайдено'));
+      const groups = q ? ALL_GROUPS.filter((g) => normGroup(g.name + g.title).includes(q)) : ALL_GROUPS.filter((g) => g.course === course);
+      if (!groups.length) list.appendChild(el('div', 'empty empty--sm', ALL_GROUPS.length ? 'Нічого не знайдено' : 'Список груп ще завантажується…'));
       for (const g of groups) {
         const b = el('button', 'gp__item');
         b.type = 'button';
-        b.appendChild(el('strong', null, (C.schedules[g.name] && C.schedules[g.name].title) || g.name));
-        b.appendChild(el('span', null, C.schedules[g.name] ? '★ повний розклад' : 'PDF + заміни'));
-        if (C.schedules[g.name]) b.classList.add('has-sch');
+        b.appendChild(el('strong', null, g.name));
+        b.appendChild(el('span', null, g.schedule ? g.title : 'лише PDF + заміни'));
+        if (g.schedule) b.classList.add('has-sch');
         if (g.name === G.name) b.classList.add('is-active');
         b.addEventListener('click', () => chooseGroup(g.name));
         list.appendChild(b);
       }
     };
-    for (const c of Object.keys(C.groups)) {
+    for (const c of [...new Set(ALL_GROUPS.map((g) => g.course))].sort()) {
       const b = el('button', 'seg__btn', `${c} курс`);
       b.type = 'button';
       b.dataset.c = c;
@@ -1278,7 +1345,7 @@
     }
     search.addEventListener('input', draw);
     box.append(seg, list);
-    box.appendChild(el('p', 'hint gp__hint', '★ — розклад уже записаний на сайті. Для інших груп показуються заміни з розпоряджень і посилання на офіційний PDF.'));
+    box.appendChild(el('p', 'hint gp__hint', 'Розклади беруться з офіційних PDF на сайті коледжу й оновлюються автоматично щодня.'));
     draw();
     openModal(box);
   }
@@ -1566,7 +1633,8 @@
   }
 
   /* ---------- Старт ---------- */
-  function main() {
+  async function main() {
+    applySchedules(load('rz_schedules', { groups: [] }));   // миттєво — збережена копія, свіжа підтягнеться нижче
     setGroup(settings.group);
     renderBrand();
     $('collegeLink').href = C.links.college;
@@ -1589,9 +1657,13 @@
     $('orderNote').addEventListener('click', () => $('orders').scrollIntoView({ behavior: 'smooth' }));
 
     renderAll();
-    if (!savedSettings.group) openGroupPicker();   // перший візит: хай людина вибере свою групу
-    fetchOrders(false);
     pollAlert().then(() => { renderAlert(); renderHero(); });
+    loadOrderArchive().then(() => fetchOrders(false));
+    await loadSchedules();
+    setGroup(settings.group);
+    renderBrand();
+    renderAll();
+    if (!savedSettings.group) openGroupPicker();   // перший візит: хай людина вибере свою групу
 
     let lastMinute = -1;
     let lastAlertPoll = Date.now();

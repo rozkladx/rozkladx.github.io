@@ -1,0 +1,58 @@
+# Оновлення даних сайту за розкладом:
+#  - архів розпоряджень про заміни — кожні 30 хв у робочий час;
+#  - розклади всіх груп з PDF на сайті коледжу — раз на день (о 05:00 за Києвом).
+# Результат комітиться в data/, GitHub Pages сам публікує нову версію.
+name: Оновлення розкладів і замін
+
+on:
+  schedule:
+    - cron: '17 3 * * *'          # розклади: щодня ~05:17 за Києвом (UTC+2)
+    - cron: '*/30 5-17 * * 1-6'   # заміни: кожні 30 хв, ПН–СБ, ~07:00–19:30 за Києвом
+  workflow_dispatch:
+    inputs:
+      schedules:
+        description: 'Також перечитати PDF розкладів'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Встановити залежності
+        working-directory: tools
+        run: npm install --no-audit --no-fund
+
+      - name: Зібрати дані
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.schedules }}" = "true" ] || [ "${{ github.event.schedule }}" = "17 3 * * *" ]; then
+            node tools/build-data.mjs
+          else
+            node tools/build-data.mjs --only-orders
+          fi
+
+      - name: Зберегти зміни
+        run: |
+          git config user.name "rozkladx-bot"
+          git config user.email "rozkladx-bot@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "Нічого не змінилось"
+          else
+            git commit -m "Оновлення даних: $(date -u +'%Y-%m-%d %H:%M') UTC"
+            git push
+          fi

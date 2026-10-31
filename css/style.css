@@ -308,6 +308,14 @@ body.alarm .logo__ping { animation-duration: .8s; }
   font-size: 13px; font-weight: 600;
 }
 
+.no-sch--ok {
+  padding: 6px 2px; margin: -6px 0 10px;
+  border: 0; background: none;
+  color: var(--muted); font-size: 12px; font-weight: 500;
+  justify-content: flex-start;
+}
+.no-sch__link { font-weight: 700; text-decoration: none; }
+
 /* вибір групи */
 .gp__search {
   width: 100%; padding: 11px 14px; margin-bottom: 10px;
