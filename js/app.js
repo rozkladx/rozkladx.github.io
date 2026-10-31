@@ -154,9 +154,14 @@
     saveSettings();
   }
 
-  // посилання на пару: з data.js → links[група]; ключ «Прізвище» або «Прізвище|початок назви предмета»
+  // приватні посилання на пари поточної групи (з Supabase: за секретним посиланням групи або для старости)
+  let privateLinks = {};
+  // правки розкладу від старости (публічні)
+  let overrides = [];
+
+  // посилання на пару; ключ «Прізвище» або «Прізвище|початок назви предмета»
   function linkFor(subject, teacher) {
-    const map = (C.links.lessons || {})[G.name] || {};
+    const map = privateLinks;
     const sn = surname(teacher);
     if (!sn) return '';
     let best = '';
@@ -268,6 +273,14 @@
       day.forEach((s, i) => {
         if (s) out.set(i + 1, { no: i + 1, subject: s.n, teacher: s.t, link: linkFor(s.n, s.t) });
       });
+    }
+    // правки старости поверх розкладу з PDF
+    if (plan) {
+      for (const o of overrides) {
+        if (o.week !== plan.week || o.day !== plan.day) continue;
+        if (o.removed) out.delete(o.pair);
+        else out.set(o.pair, { no: o.pair, subject: o.subject, teacher: o.teacher, link: linkFor(o.subject, o.teacher), edited: true });
+      }
     }
 
     for (const r of mySubRows(key)) {
@@ -1011,6 +1024,7 @@
     if (l.change === 'cancel') title.appendChild(el('span', 'badge badge--bad', 'Скасовано'));
     if (l.change === 'replace') title.appendChild(el('span', 'badge', 'Заміна'));
     if (l.change === 'add') title.appendChild(el('span', 'badge', 'Додано'));
+    if (l.edited && !l.change) title.appendChild(el('span', 'badge badge--muted', 'Правка старости'));
     body.appendChild(title);
     if (l.teacher) body.appendChild(el('div', 'lesson__teacher', l.teacher));
     if (l.change === 'replace' && l.orig && l.orig.subject && l.orig.subject !== l.subject) {
@@ -1309,6 +1323,16 @@
   /* ---------- Вибір групи ---------- */
   function openGroupPicker() {
     const box = el('div');
+    // сайт закріплений за групою (секретне посилання старости або акаунт старости) — вибору немає
+    if (lockedGroup) {
+      box.appendChild(el('div', 'modal__kicker', C.college));
+      box.appendChild(el('h3', 'modal__title', '🔒 Група ' + G.title));
+      box.appendChild(el('p', null, isStarosta()
+        ? 'Ви староста цієї групи, тож сайт показує саме її.'
+        : 'Сайт відкрито за посиланням вашого старости, тому він показує лише вашу групу разом із посиланнями на пари.'));
+      openModal(box);
+      return;
+    }
     box.appendChild(el('div', 'modal__kicker', C.college));
     box.appendChild(el('h3', 'modal__title', 'Оберіть групу'));
     const search = document.createElement('input');
@@ -1351,6 +1375,7 @@
   }
 
   function chooseGroup(name) {
+    if (lockedGroup) return;
     setGroup(name);
     save('rz_seen_sig', changesSignature());
     closeModal();
@@ -1359,11 +1384,14 @@
     renderBrand();
     playSound('ui');
     toast('Група: ' + G.title);
+    loadOverrides().then(renderAll);
   }
 
   function renderBrand() {
-    $('groupName').textContent = G.title;
+    $('groupName').textContent = (lockedGroup ? '🔒 ' : '') + G.title;
+    $('groupName').classList.toggle('is-locked', !!lockedGroup);
     document.title = `${C.siteName} · ${G.title}`;
+    $('openAccount').classList.toggle('is-on', !!(auth.profile && (isStarosta() || isAdmin())));
   }
 
   function openOriginal() {
@@ -1552,6 +1580,7 @@
     $('soonMin').value = settings.soonMin;
     $('soonMin').addEventListener('change', (e) => { settings.soonMin = Math.max(0, Math.min(30, Number(e.target.value) || 0)); e.target.value = settings.soonMin; saveSettings(); });
     $('groupName').addEventListener('click', openGroupPicker);
+    $('openAccount').addEventListener('click', () => openAccount());
     $('changeGroup').addEventListener('click', () => { closeDrawer(); openGroupPicker(); });
 
     // часовий пояс показу
@@ -1632,6 +1661,427 @@
     setInterval(cb, ms);
   }
 
+  /* =====================================================================
+     АКАУНТИ (Supabase)
+     - староста реєструється, вказує групу → адмін підтверджує → староста редагує лише свою групу;
+     - студенти без акаунтів: секретне посилання групи #g=… закріплює сайт за групою й відкриває посилання на пари;
+     - без секретного посилання видно розклад і заміни, але не посилання на пари.
+     ===================================================================== */
+  const sb = (() => {
+    const cfg = C.supabase || {};
+    if (!cfg.url || !cfg.anonKey || !window.supabase) return null;
+    try { return window.supabase.createClient(cfg.url, cfg.anonKey); } catch (e) { return null; }
+  })();
+  const auth = { user: null, profile: null };
+  let lockedGroup = null;        // група, закріплена секретним посиланням або акаунтом старости
+  const isStarosta = () => auth.profile && auth.profile.role === 'starosta';
+  const isAdmin = () => auth.profile && auth.profile.role === 'admin';
+  const groupLink = (token) => location.origin + location.pathname + '#g=' + token;
+
+  // секретне посилання групи: #g=… з адреси переносимо в пам'ять браузера й прибираємо з адреси
+  function takeTokenFromUrl() {
+    const m = location.hash.match(/(?:^#|&)g=([a-f0-9]{16,64})/i);
+    if (!m) return;
+    save('rz_group_token', m[1]);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+
+  async function loadAccess() {
+    privateLinks = {};
+    lockedGroup = null;
+    if (!sb) return;
+    // староста бачить і редагує свою групу
+    if (isStarosta()) {
+      lockedGroup = auth.profile.group_name;
+      const { data } = await sb.from('lesson_links').select('teacher_key,url').eq('group_name', lockedGroup);
+      privateLinks = Object.fromEntries((data || []).map((r) => [r.teacher_key, r.url]));
+      return;
+    }
+    const token = load('rz_group_token', null);
+    if (!token) return;
+    const { data, error } = await sb.rpc('group_by_token', { p_token: token });
+    if (error) return;   // немає зв'язку — спробуємо пізніше
+    if (!data) {
+      save('rz_group_token', null);
+      toast('Посилання групи застаріло — попросіть нове у старости');
+      return;
+    }
+    lockedGroup = data.group_name;
+    privateLinks = data.links || {};
+  }
+
+  async function loadOverrides() {
+    overrides = [];
+    if (!sb || !G) return;
+    const { data } = await sb.from('schedule_overrides').select('week,day,pair,subject,teacher,removed').eq('group_name', G.name);
+    overrides = data || [];
+  }
+
+  // застосувати доступ: закріплена група, посилання, правки → перемалювати
+  async function refreshAccess() {
+    await loadAccess();
+    if (lockedGroup && lockedGroup !== settings.group) { setGroup(lockedGroup); goHome(); }
+    await loadOverrides();
+    renderBrand();
+    renderAll();
+  }
+
+  async function loadProfile() {
+    auth.profile = null;
+    if (!sb || !auth.user) return;
+    const { data } = await sb.from('profiles').select('*').eq('id', auth.user.id).maybeSingle();
+    auth.profile = data || null;
+  }
+
+  async function initAuth() {
+    takeTokenFromUrl();
+    if (!sb) return;
+    const { data } = await sb.auth.getSession();
+    auth.user = data.session ? data.session.user : null;
+    await loadProfile();
+    sb.auth.onAuthStateChange(async (event, session) => {
+      auth.user = session ? session.user : null;
+      if (event === 'PASSWORD_RECOVERY') { openAccount('newpass'); return; }
+      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+        await loadProfile();
+        await refreshAccess();
+        if (!$('modal').hidden && $('modalBody').querySelector('.acc')) openAccount();
+      }
+    });
+  }
+
+  /* ---------- Вікно акаунта ---------- */
+  const field = (label, input) => { const l = el('label', 'field'); l.append(el('span', null, label), input); return l; };
+  const inp = (type, ph, val) => { const i = document.createElement('input'); i.type = type; if (ph) i.placeholder = ph; if (val != null) i.value = val; return i; };
+  const btn = (text, cls, onClick) => { const b = el('button', 'btn ' + (cls || ''), text); b.type = 'button'; if (onClick) b.addEventListener('click', onClick); return b; };
+  const msgBox = () => el('div', 'acc__msg');
+  const say = (box, text, bad) => { box.textContent = text; box.classList.toggle('is-bad', !!bad); };
+  async function busy(b, fn) {
+    b.disabled = true;
+    try { await fn(); } finally { b.disabled = false; }
+  }
+
+  function groupSelect(value) {
+    const s = document.createElement('select');
+    const empty = el('option', null, '— оберіть групу —');
+    empty.value = '';
+    s.appendChild(empty);
+    for (const g of ALL_GROUPS) {
+      const o = el('option', null, `${g.name} (${g.course} курс)`);
+      o.value = g.name;
+      s.appendChild(o);
+    }
+    s.value = value || '';
+    return s;
+  }
+
+  function openAccount(mode) {
+    const box = el('div', 'acc');
+    box.appendChild(el('div', 'modal__kicker', C.siteName + ' · кабінет старости'));
+    if (!sb) {
+      box.appendChild(el('h3', 'modal__title', 'Акаунти ще не підключені'));
+      box.appendChild(el('p', 'hint', 'Власник сайту має вказати проєкт Supabase у js/data.js.'));
+      openModal(box);
+      return;
+    }
+    if (mode === 'newpass') renderNewPassword(box);
+    else if (!auth.user) renderLogin(box, mode === 'register');
+    else if (!auth.profile) renderNoProfile(box);
+    else if (isAdmin()) renderAdmin(box);
+    else if (isStarosta()) renderStarosta(box);
+    else renderPending(box);
+    openModal(box, isStarosta() || isAdmin());
+  }
+
+  function renderLogin(box, register) {
+    box.appendChild(el('h3', 'modal__title', register ? 'Реєстрація старости' : 'Вхід для старост'));
+    const tabs = el('div', 'seg seg--sm acc__tabs');
+    const tLogin = btn('Вхід', 'seg__btn' + (register ? '' : ' is-active'), () => openAccount());
+    const tReg = btn('Реєстрація', 'seg__btn' + (register ? ' is-active' : ''), () => openAccount('register'));
+    tabs.append(tLogin, tReg);
+    box.appendChild(tabs);
+    const email = inp('email', 'пошта@приклад.com');
+    email.autocomplete = 'email';
+    const pass = inp('password', register ? 'щонайменше 8 символів' : '');
+    pass.autocomplete = register ? 'new-password' : 'current-password';
+    const msg = msgBox();
+    if (register) {
+      const name = inp('text', 'Прізвище Ім\'я');
+      const grp = groupSelect(G ? G.name : '');
+      box.append(field('ПІБ', name), field('Ваша група', grp), field('Пошта', email), field('Пароль', pass));
+      box.appendChild(el('p', 'hint', 'Після реєстрації заявку підтверджує адміністратор сайту. Редагувати можна буде лише вибрану групу.'));
+      const go = btn('Надіслати заявку', 'btn--accent');
+      go.addEventListener('click', () => busy(go, async () => {
+        if (!name.value.trim() || !grp.value) return say(msg, 'Вкажіть ПІБ і групу', true);
+        if (pass.value.length < 8) return say(msg, 'Пароль — щонайменше 8 символів', true);
+        const { data, error } = await sb.auth.signUp({
+          email: email.value.trim(), password: pass.value,
+          options: { data: { full_name: name.value.trim(), group_name: grp.value }, emailRedirectTo: location.origin + location.pathname },
+        });
+        if (error) return say(msg, 'Помилка: ' + error.message, true);
+        say(msg, data.session ? 'Заявку надіслано. Чекайте підтвердження адміністратора.' :
+          'Майже готово: підтвердьте пошту за посиланням у листі, потім увійдіть. Заявка вже чекає на підтвердження.');
+      }));
+      box.append(go, msg);
+    } else {
+      box.append(field('Пошта', email), field('Пароль', pass));
+      const go = btn('Увійти', 'btn--accent');
+      go.addEventListener('click', () => busy(go, async () => {
+        const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
+        if (error) return say(msg, error.message === 'Invalid login credentials' ? 'Невірна пошта або пароль' : 'Помилка: ' + error.message, true);
+      }));
+      pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') go.click(); });
+      const forgot = btn('Забули пароль?', 'btn--ghost btn--sm', async () => {
+        if (!email.value.trim()) return say(msg, 'Спершу впишіть пошту', true);
+        const { error } = await sb.auth.resetPasswordForEmail(email.value.trim(), { redirectTo: location.origin + location.pathname });
+        say(msg, error ? 'Помилка: ' + error.message : 'Лист для зміни пароля надіслано', !!error);
+      });
+      const row = el('div', 'row-btns');
+      row.append(go, forgot);
+      box.append(row, msg);
+    }
+  }
+
+  function renderNewPassword(box) {
+    box.appendChild(el('h3', 'modal__title', 'Новий пароль'));
+    const pass = inp('password', 'щонайменше 8 символів');
+    const msg = msgBox();
+    const go = btn('Зберегти', 'btn--accent');
+    go.addEventListener('click', () => busy(go, async () => {
+      if (pass.value.length < 8) return say(msg, 'Щонайменше 8 символів', true);
+      const { error } = await sb.auth.updateUser({ password: pass.value });
+      say(msg, error ? 'Помилка: ' + error.message : 'Пароль змінено', !!error);
+    }));
+    box.append(field('Пароль', pass), go, msg);
+  }
+
+  const logoutBtn = () => btn('Вийти', 'btn--ghost btn--sm', async () => { await sb.auth.signOut(); closeModal(); toast('Ви вийшли'); });
+
+  function renderNoProfile(box) {
+    box.appendChild(el('h3', 'modal__title', 'Профіль не знайдено'));
+    box.appendChild(el('p', 'hint', 'Спробуйте вийти й увійти ще раз або напишіть адміністратору.'));
+    box.appendChild(logoutBtn());
+  }
+
+  function renderPending(box) {
+    const p = auth.profile;
+    const rejected = p.role === 'rejected';
+    box.appendChild(el('h3', 'modal__title', rejected ? 'Заявку відхилено' : 'Заявка на розгляді'));
+    box.appendChild(el('p', null, rejected
+      ? `Заявку на роль старости групи ${p.group_name} відхилено. Якщо це помилка — напишіть адміністратору сайту.`
+      : `Ви подали заявку на роль старости групи ${p.group_name}. Щойно адміністратор її підтвердить, тут з'явиться панель редагування.`));
+    box.appendChild(logoutBtn());
+  }
+
+  /* ---------- Панель старости ---------- */
+  function renderStarosta(box) {
+    const p = auth.profile;
+    const head = el('div', 'acc__head');
+    head.append(el('h3', 'modal__title', `Староста ${p.group_name}`), logoutBtn());
+    box.appendChild(head);
+    box.appendChild(el('p', 'hint', `${p.full_name || p.email} · редагувати можна лише свою групу.`));
+
+    // 1. секретне посилання групи
+    const sec = el('section', 'acc__sec');
+    sec.appendChild(el('h4', 'h3', '🔗 Посилання для групи'));
+    sec.appendChild(el('p', 'hint', 'Надішліть його в чат групи. Хто відкриє — побачить посилання на пари саме вашої групи, а сайт закріпиться за нею.'));
+    const linkOut = inp('text', 'завантаження…');
+    linkOut.readOnly = true;
+    const lmsg = msgBox();
+    const copy = btn('Копіювати', 'btn--accent btn--sm', async () => {
+      try { await navigator.clipboard.writeText(linkOut.value); say(lmsg, 'Скопійовано ✓'); } catch (e) { linkOut.select(); say(lmsg, 'Скопіюйте вручну (Ctrl+C)'); }
+    });
+    const rotate = btn('Нове посилання', 'btn--ghost btn--sm', () => busy(rotate, async () => {
+      if (!confirm('Старе посилання перестане працювати. Створити нове?')) return;
+      const { data, error } = await sb.rpc('rotate_group_token');
+      if (error) return say(lmsg, 'Помилка: ' + error.message, true);
+      linkOut.value = groupLink(data);
+      say(lmsg, 'Нове посилання створено — надішліть його групі');
+    }));
+    sb.rpc('my_group_token').then(({ data, error }) => { linkOut.value = error ? '' : groupLink(data); if (error) say(lmsg, 'Помилка: ' + error.message, true); });
+    const lr = el('div', 'row-btns');
+    lr.append(copy, rotate);
+    sec.append(linkOut, lr, lmsg);
+    box.appendChild(sec);
+
+    // 2. посилання на пари
+    box.appendChild(renderLinksEditor(p.group_name));
+    // 3. правки розкладу
+    box.appendChild(renderOverridesEditor(p.group_name));
+  }
+
+  // список «викладач → посилання» для всіх викладачів групи
+  function renderLinksEditor(groupName) {
+    const sec = el('section', 'acc__sec');
+    sec.appendChild(el('h4', 'h3', '🎥 Посилання на пари'));
+    sec.appendChild(el('p', 'hint', 'Одне посилання на всі пари викладача. Якщо в нього різні посилання на різні предмети — заповніть рядки окремих предметів.'));
+    const teachers = new Map();   // прізвище → Set(предмети)
+    const add = (n, t) => {
+      const sn = (t || '').split(',')[0].trim().split(/\s+/)[0];
+      if (!sn) return;
+      if (!teachers.has(sn)) teachers.set(sn, { full: t.split(',')[0].trim(), subjects: new Set() });
+      teachers.get(sn).subjects.add(n);
+    };
+    if (G.sch) for (const w of Object.values(G.sch.schedule)) for (const d of Object.values(w)) for (const l of d) if (l) add(l.n, l.t);
+    for (const o of overrides) if (!o.removed) add(o.subject, o.teacher);
+
+    const rows = [];
+    const list = el('div', 'acc__links');
+    for (const [sn, info] of [...teachers.entries()].sort((a, b) => a[0].localeCompare(b[0], 'uk'))) {
+      const mk = (key, label, sub) => {
+        const r = el('div', 'acc__link' + (sub ? ' is-sub' : ''));
+        const i = inp('url', 'https://… (порожньо — без посилання)', privateLinks[key] || '');
+        r.append(el('span', 'acc__who', label), i);
+        rows.push({ key, i });
+        list.appendChild(r);
+      };
+      mk(sn, `${info.full} — усі пари`);
+      if (info.subjects.size > 1) for (const s of info.subjects) mk(`${sn}|${s}`, `↳ ${s}`, true);
+    }
+    if (!rows.length) list.appendChild(el('div', 'empty empty--sm', 'У розкладі групи немає викладачів'));
+    const msg = msgBox();
+    const saveBtn = btn('Зберегти посилання', 'btn--accent btn--sm');
+    saveBtn.addEventListener('click', () => busy(saveBtn, async () => {
+      const bad = rows.find((r) => r.i.value.trim() && !/^https?:\/\//i.test(r.i.value.trim()));
+      if (bad) { bad.i.focus(); return say(msg, 'Посилання має починатися з https://', true); }
+      const up = rows.filter((r) => r.i.value.trim()).map((r) => ({ group_name: groupName, teacher_key: r.key, url: r.i.value.trim(), updated_by: auth.user.id, updated_at: new Date().toISOString() }));
+      const del = rows.filter((r) => !r.i.value.trim() && privateLinks[r.key]).map((r) => r.key);
+      if (up.length) { const { error } = await sb.from('lesson_links').upsert(up); if (error) return say(msg, 'Помилка: ' + error.message, true); }
+      if (del.length) { const { error } = await sb.from('lesson_links').delete().eq('group_name', groupName).in('teacher_key', del); if (error) return say(msg, 'Помилка: ' + error.message, true); }
+      await refreshAccess();
+      say(msg, 'Збережено ✓');
+    }));
+    sec.append(list, saveBtn, msg);
+    return sec;
+  }
+
+  // правка окремої пари: інший предмет/викладач або «пари немає»
+  function renderOverridesEditor(groupName) {
+    const sec = el('section', 'acc__sec');
+    sec.appendChild(el('h4', 'h3', '✏️ Правки розкладу'));
+    sec.appendChild(el('p', 'hint', 'Якщо в PDF коледжу помилка або розклад змінився — виправте пару тут. Правки бачать усі, поверх офіційного розкладу.'));
+    const mkSel = (opts) => { const s = document.createElement('select'); for (const [v, t] of opts) { const o = el('option', null, t); o.value = v; s.appendChild(o); } return s; };
+    const wk = mkSel([['1', 'I тиждень'], ['2', 'II тиждень']]);
+    const dy = mkSel(WORK_DAYS.map((d) => [d, DAY_FULL[d]]));
+    const pr = mkSel(C.bells.map((b, i) => [String(i + 1), `${i + 1} пара (${b.start})`]));
+    const subj = inp('text', 'Назва предмета');
+    const teach = inp('text', 'Прізвище І.Б.');
+    const removed = inp('checkbox');
+    const cur = el('div', 'hint acc__cur');
+    const sync = () => {
+      const w = Number(wk.value), d = dy.value, p = Number(pr.value);
+      const o = overrides.find((x) => x.week === w && x.day === d && x.pair === p);
+      const base = G.sch && ((G.sch.schedule[w] || {})[d] || [])[p - 1];
+      cur.textContent = 'У PDF коледжу: ' + (base ? `${base.n}${base.t ? ' · ' + base.t : ''}` : 'пари немає') + (o ? ' · є ваша правка' : '');
+      subj.value = o ? o.subject : base ? base.n : '';
+      teach.value = o ? o.teacher : base ? base.t : '';
+      removed.checked = !!(o && o.removed);
+    };
+    [wk, dy, pr].forEach((s) => s.addEventListener('change', sync));
+    const grid = el('div', 'acc__grid');
+    grid.append(field('Тиждень', wk), field('День', dy), field('Пара', pr));
+    const rm = el('label', 'switch-row');
+    rm.append(removed, el('span', null, 'Пари немає (прибрати з розкладу)'));
+    const msg = msgBox();
+    const saveBtn = btn('Зберегти правку', 'btn--accent btn--sm');
+    saveBtn.addEventListener('click', () => busy(saveBtn, async () => {
+      if (!removed.checked && !subj.value.trim()) return say(msg, 'Вкажіть предмет або позначте «Пари немає»', true);
+      const { error } = await sb.from('schedule_overrides').upsert({
+        group_name: groupName, week: Number(wk.value), day: dy.value, pair: Number(pr.value),
+        subject: removed.checked ? '' : subj.value.trim(), teacher: removed.checked ? '' : teach.value.trim(),
+        removed: removed.checked, updated_by: auth.user.id, updated_at: new Date().toISOString(),
+      });
+      if (error) return say(msg, 'Помилка: ' + error.message, true);
+      await refreshAccess();
+      drawList();
+      sync();
+      say(msg, 'Збережено ✓');
+    }));
+    const list = el('div', 'acc__olist');
+    const drawList = () => {
+      list.textContent = '';
+      if (!overrides.length) { list.appendChild(el('div', 'hint', 'Правок поки немає.')); return; }
+      for (const o of [...overrides].sort((a, b) => a.week - b.week || WORK_DAYS.indexOf(a.day) - WORK_DAYS.indexOf(b.day) || a.pair - b.pair)) {
+        const r = el('div', 'acc__orow');
+        r.appendChild(el('span', null, `${ROMAN[o.week]} · ${DAY_SHORT[o.day]} · ${o.pair} пара: ${o.removed ? 'пари немає' : o.subject + (o.teacher ? ' · ' + o.teacher : '')}`));
+        const x = btn('✕', 'btn--ghost btn--sm', () => busy(x, async () => {
+          const { error } = await sb.from('schedule_overrides').delete().match({ group_name: groupName, week: o.week, day: o.day, pair: o.pair });
+          if (error) return say(msg, 'Помилка: ' + error.message, true);
+          await refreshAccess();
+          drawList();
+          sync();
+        }));
+        x.title = 'Скасувати правку';
+        r.appendChild(x);
+        list.appendChild(r);
+      }
+    };
+    sync();
+    drawList();
+    sec.append(grid, cur, field('Предмет', subj), field('Викладач', teach), rm, saveBtn, msg, el('h4', 'acc__sub', 'Ваші правки'), list);
+    return sec;
+  }
+
+  /* ---------- Панель адміністратора ---------- */
+  function renderAdmin(box) {
+    const head = el('div', 'acc__head');
+    head.append(el('h3', 'modal__title', 'Адміністратор'), logoutBtn());
+    box.appendChild(head);
+    const msg = msgBox();
+    const pend = el('section', 'acc__sec');
+    pend.appendChild(el('h4', 'h3', '📝 Заявки старост'));
+    const pendList = el('div', 'acc__olist');
+    const st = el('section', 'acc__sec');
+    st.appendChild(el('h4', 'h3', '👥 Старости'));
+    const stList = el('div', 'acc__olist');
+    const draw = async () => {
+      const { data, error } = await sb.from('profiles').select('*').neq('role', 'admin').order('created_at', { ascending: false });
+      if (error) return say(msg, 'Помилка: ' + error.message, true);
+      pendList.textContent = '';
+      stList.textContent = '';
+      const pending = (data || []).filter((p) => p.role === 'pending');
+      const staros = (data || []).filter((p) => p.role === 'starosta');
+      if (!pending.length) pendList.appendChild(el('div', 'hint', 'Нових заявок немає.'));
+      for (const p of pending) {
+        const r = el('div', 'acc__orow acc__orow--wrap');
+        const info = el('div');
+        info.append(el('strong', null, p.full_name || '—'), el('div', 'hint', `${p.email} · ${new Date(p.created_at).toLocaleDateString('uk-UA')}`));
+        const grp = groupSelect(p.group_name);
+        const ok = btn('Підтвердити', 'btn--accent btn--sm', () => busy(ok, async () => {
+          if (!grp.value) return say(msg, 'Оберіть групу', true);
+          const { error: e } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: 'starosta', p_group: grp.value });
+          if (e) return say(msg, 'Помилка: ' + e.message, true);
+          say(msg, `${p.full_name || p.email} — староста ${grp.value}`);
+          draw();
+        }));
+        const no = btn('Відхилити', 'btn--ghost btn--sm', () => busy(no, async () => {
+          const { error: e } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: 'rejected', p_group: null });
+          if (e) return say(msg, 'Помилка: ' + e.message, true);
+          draw();
+        }));
+        r.append(info, grp, ok, no);
+        pendList.appendChild(r);
+      }
+      if (!staros.length) stList.appendChild(el('div', 'hint', 'Підтверджених старост ще немає.'));
+      for (const p of staros.sort((a, b) => a.group_name.localeCompare(b.group_name, 'uk'))) {
+        const r = el('div', 'acc__orow');
+        r.appendChild(el('span', null, `${p.group_name} — ${p.full_name || ''} (${p.email})`));
+        const off = btn('Зняти роль', 'btn--ghost btn--sm', () => busy(off, async () => {
+          if (!confirm(`Зняти роль старости з ${p.full_name || p.email}?`)) return;
+          const { error: e } = await sb.rpc('admin_set_role', { p_user: p.id, p_role: 'rejected', p_group: null });
+          if (e) return say(msg, 'Помилка: ' + e.message, true);
+          draw();
+        }));
+        r.appendChild(off);
+        stList.appendChild(r);
+      }
+    };
+    pend.appendChild(pendList);
+    st.appendChild(stList);
+    box.append(msg, pend, st);
+    draw();
+  }
+
   /* ---------- Старт ---------- */
   async function main() {
     applySchedules(load('rz_schedules', { groups: [] }));   // миттєво — збережена копія, свіжа підтягнеться нижче
@@ -1659,11 +2109,11 @@
     renderAll();
     pollAlert().then(() => { renderAlert(); renderHero(); });
     loadOrderArchive().then(() => fetchOrders(false));
-    await loadSchedules();
+    await Promise.all([loadSchedules(), initAuth()]);
     setGroup(settings.group);
-    renderBrand();
-    renderAll();
-    if (!savedSettings.group) openGroupPicker();   // перший візит: хай людина вибере свою групу
+    await refreshAccess();   // секретне посилання групи / акаунт старости → закріплена група й посилання на пари
+    // перший візит без посилання старости: хай людина вибере свою групу
+    if (!savedSettings.group && !lockedGroup) openGroupPicker();
 
     let lastMinute = -1;
     let lastAlertPoll = Date.now();

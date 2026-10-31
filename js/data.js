@@ -54,35 +54,14 @@ window.SCHEDULE_CONFIG = {
   links: {
     college: 'https://ccte.nau.edu.ua/',
     schedule: 'https://ccte.nau.edu.ua/Розклад%20занять.html',
+  },
 
-    /* Посилання на онлайн-пари (у PDF коледжу їх немає).
-       lessons[група] = { 'Прізвище': посилання } — для всіх пар цього викладача в групі,
-       або 'Прізвище|Початок назви предмета' — якщо в одного викладача різні посилання на різні предмети.
-       Назва групи — як у списку на сайті: 'П-42', 'К-33, К-30'… */
-    lessons: {
-      'П-42': {
-        'Ціпоренко': 'https://meet.google.com/jqc-kbdh-zht',
-        'Карачун': 'https://meet.google.com/scq-juja-jof?authuser=0&hs=179',
-        'Висоцька': 'https://us04web.zoom.us/j/74242342298?pwd=dnM9aGhJAB69ZPpcV2CobUm27ObhCb.1',
-        'Круш': 'https://discord.gg/',
-        'Кравець': 'https://us04web.zoom.us/j/73546234078?pwd=KFR9jpmiTLHivmhKV4dGTwnfos6Ea4.1',
-        'Бєлая': 'https://us04web.zoom.us/j/8604144124?pwd=NeVvcz73KPV3mT1AccDZ3IPFqZP8ab.1',
-      },
-      'П-21': {
-        'Савіна': 'https://us04web.zoom.us/j/4424345889?pwd=yPqeiASgYJmdadhgqgEBbkVmhS4b2i.1&omn=79018831484',
-        'Бардишев': 'https://meet.google.com/ymz-mjtt-duq',
-        'Бардишев|Історія України (факультатив)': 'https://meet.google.com/fhn-empk-wuu',
-        'Якобчук': 'https://meet.google.com/crp-stbg-sxa',
-        'Гусак': 'https://meet.google.com/uha-xsnj-rjw',
-        'Гусак|Українська література': 'https://meet.google.com/egu-ruxm-prk',
-        'Базильчук': 'https://meet.google.com/zsf-ymkv-bkh',
-        'Портна': 'https://us04web.zoom.us/j/7930619599?pwd=WWhUUGVwS0RkK08yUjRFY0kxU1JHdz09',
-        'Чуйков': 'https://meet.google.com/ncm-rtnn-eiw',
-        'Чуйков|Математичний аналіз': 'https://meet.google.com/ewb-wxmt-vfr',
-        'Майдан': 'https://us04web.zoom.us/j/9725123788?pwd=R001Z3BpcFNhZ0tKL2xvNHJSWFdoQT09&omn=77180326621',
-        'Ганненко': 'https://us05web.zoom.us/j/6185246444?pwd=Zy9zYXBNZU1JSEE4UGY3b0FxSnVlZz09',
-        'Ціпоренко': 'https://meet.google.com/awz-sprz-gbi',
-      },
-    },
+  /* Акаунти старост і посилання на пари — у Supabase (див. supabase/schema.sql).
+     Посилання на пари більше НЕ зберігаються в цьому файлі: їх вносить староста,
+     а студенти бачать лише за секретним посиланням своєї групи.
+     anonKey — публічний ключ (так задумано Supabase), доступ обмежують правила в базі. */
+  supabase: {
+    url: 'https://tfhpyqgopvapnnwppksm.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRmaHB5cWdvcHZhcG5ud3Bwa3NtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0NDgyMjUsImV4cCI6MjEwOTAyNDIyNX0.-L5upy-9-y1kfvfoiLSBpGC7j1xyWAPsIaD-6rMiPfc',
   },
 };
