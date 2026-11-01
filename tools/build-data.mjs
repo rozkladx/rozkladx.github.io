@@ -3,6 +3,7 @@
 //   data/orders.json    — архів розпоряджень про заміни (сирий CSV з Google Drive коледжу)
 // Запуск вручну: node tools/build-data.mjs [--only-orders]
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { parseSchedulePdf } from './parse-pdf.mjs';
 
 const COLLEGE = 'https://ccte.nau.edu.ua/';
@@ -74,8 +75,13 @@ async function buildSchedules() {
   }
   const ok = out.filter((g) => g.schedule && !g.error).length;
   if (ok < groups.length / 2) throw new Error(`розібрано лише ${ok} із ${groups.length} — не перезаписуємо файл`);
-  await writeFile('data/schedules.json', JSON.stringify({ generatedAt: new Date().toISOString(), source: SCHEDULE_PAGE, groups: out }, null, 1));
-  console.log(`Готово: ${ok}/${groups.length} груп`);
+  // хеш змісту: якщо розклади ті самі, файл не чіпаємо — ні коміту, ні перезбирання сайту
+  const hash = createHash('sha256').update(JSON.stringify(out)).digest('hex').slice(0, 16);
+  let prevHash = null;
+  try { prevHash = JSON.parse(await readFile('data/schedules.json', 'utf8')).hash || null; } catch (e) { /* перший запуск */ }
+  if (prevHash === hash) { console.log(`Розклади без змін (${ok}/${groups.length}), файл не оновлюю`); return; }
+  await writeFile('data/schedules.json', JSON.stringify({ generatedAt: new Date().toISOString(), hash, source: SCHEDULE_PAGE, groups: out }, null, 1));
+  console.log(`Готово: ${ok}/${groups.length} груп (зміни є)`);
 }
 
 // архів розпоряджень: файл на Drive щоразу перезаписують, тож зберігаємо кожну нову версію

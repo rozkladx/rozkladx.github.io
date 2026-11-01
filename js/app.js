@@ -1834,6 +1834,15 @@
     openModal(box, isStarosta() || isAdmin());
   }
 
+  // не більше 5 спроб входу/реєстрації за 10 хв з цього браузера (решту обмежує сам Supabase за IP)
+  const ATTEMPT_MAX = 5, ATTEMPT_WINDOW = 10 * 60 * 1000;
+  const recentAttempts = () => (load('rz_attempts', []) || []).filter((t) => Date.now() - t < ATTEMPT_WINDOW);
+  const noteAttempt = () => save('rz_attempts', [...recentAttempts(), Date.now()]);
+  function attemptWait() {
+    const a = recentAttempts();
+    return a.length < ATTEMPT_MAX ? 0 : Math.ceil((a[0] + ATTEMPT_WINDOW - Date.now()) / 1000);
+  }
+
   function renderLogin(box, register) {
     box.appendChild(el('h3', 'modal__title', register ? 'Реєстрація старости' : 'Вхід для старост'));
     const tabs = el('div', 'seg seg--sm acc__tabs');
@@ -1855,6 +1864,9 @@
       go.addEventListener('click', () => busy(go, async () => {
         if (!name.value.trim() || !grp.value) return say(msg, 'Вкажіть ПІБ і групу', true);
         if (pass.value.length < 8) return say(msg, 'Пароль — щонайменше 8 символів', true);
+        const wait = attemptWait();
+        if (wait) return say(msg, `Забагато спроб. Зачекайте ${wait} с`, true);
+        noteAttempt();
         const { data, error } = await sb.auth.signUp({
           email: email.value.trim(), password: pass.value,
           options: { data: { full_name: name.value.trim(), group_name: grp.value }, emailRedirectTo: location.origin + location.pathname },
@@ -1868,8 +1880,12 @@
       box.append(field('Пошта', email), field('Пароль', pass));
       const go = btn('Увійти', 'btn--accent');
       go.addEventListener('click', () => busy(go, async () => {
+        const wait = attemptWait();
+        if (wait) return say(msg, `Забагато спроб. Зачекайте ${wait} с`, true);
+        noteAttempt();
         const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
         if (error) return say(msg, error.message === 'Invalid login credentials' ? 'Невірна пошта або пароль' : 'Помилка: ' + error.message, true);
+        save('rz_attempts', []);
       }));
       pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') go.click(); });
       const forgot = btn('Забули пароль?', 'btn--ghost btn--sm', async () => {
