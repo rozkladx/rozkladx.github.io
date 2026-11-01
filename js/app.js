@@ -1393,6 +1393,8 @@
     $('groupName').classList.toggle('is-locked', !!lockedGroup);
     document.title = `${C.siteName} · ${G.title}`;
     $('openAccount').classList.toggle('is-on', !!(auth.profile && (isStarosta() || isAdmin())));
+    // кнопку кабінету бачать лише ті, хто ввійшов; вхід — за посиланням #login, реєстрація — за посиланням для старости
+    $('openAccount').hidden = !auth.user;
   }
 
   function openOriginal() {
@@ -1680,15 +1682,20 @@
   const groupLink = (token) => location.origin + location.pathname + '#g=' + token;
   // посилання для старости: одразу відкриває реєстрацію з уже вибраною групою
   const starostaLink = (group) => location.origin + location.pathname + '#reg=' + encodeURIComponent(group);
+  // службове посилання для входу старост і адміна (звичайним відвідувачам вхід не показується)
+  const loginLink = () => location.origin + location.pathname + '#login';
   let regFromUrl = null;
+  let loginFromUrl = false;
 
-  // з адреси: #g=… — секретне посилання групи (для студентів), #reg=… — реєстрація старости
+  // з адреси: #g=… — секретне посилання групи (студенти), #reg=… — реєстрація старости, #login — вхід
   function takeTokenFromUrl() {
     const g = location.hash.match(/(?:^#|&)g=([a-f0-9]{16,64})/i);
     const reg = location.hash.match(/(?:^#|&)reg=([^&]+)/);
-    if (!g && !reg) return;
+    const login = /(?:^#|&)login\b/.test(location.hash);
+    if (!g && !reg && !login) return;
     if (g) save('rz_group_token', g[1]);
     if (reg) { try { regFromUrl = decodeURIComponent(reg[1]); } catch (e) { regFromUrl = null; } }
+    loginFromUrl = login;
     history.replaceState(null, '', location.pathname + location.search);
   }
 
@@ -1867,11 +1874,14 @@
 
   function renderLogin(box, register, presetGroup) {
     box.appendChild(el('h3', 'modal__title', register ? 'Реєстрація старости' : 'Вхід для старост'));
-    const tabs = el('div', 'seg seg--sm acc__tabs');
-    const tLogin = btn('Вхід', 'seg__btn' + (register ? '' : ' is-active'), () => openAccount());
-    const tReg = btn('Реєстрація', 'seg__btn' + (register ? ' is-active' : ''), () => openAccount('register', presetGroup));
-    tabs.append(tLogin, tReg);
-    box.appendChild(tabs);
+    // вкладка «Реєстрація» — лише для того, хто прийшов за посиланням для старости своєї групи
+    if (presetGroup) {
+      const tabs = el('div', 'seg seg--sm acc__tabs');
+      const tLogin = btn('Вхід', 'seg__btn' + (register ? '' : ' is-active'), () => openAccount('login', presetGroup));
+      const tReg = btn('Реєстрація', 'seg__btn' + (register ? ' is-active' : ''), () => openAccount('register', presetGroup));
+      tabs.append(tLogin, tReg);
+      box.appendChild(tabs);
+    }
     const email = inp('email', 'пошта@приклад.com');
     email.autocomplete = 'email';
     const pass = inp('password', register ? 'щонайменше 8 символів' : '');
@@ -2154,6 +2164,7 @@
       try { await navigator.clipboard.writeText(out.value); say(m, 'Скопійовано ✓'); } catch (e) { out.select(); say(m, 'Скопіюйте вручну (Ctrl+C)'); }
     });
     sec.append(out, copy, m);
+    sec.appendChild(el('p', 'hint', `Для повторного входу (новий телефон, вийшли з акаунта) старости й ви відкриваєте ${loginLink()} — звичайним відвідувачам вхід не показується.`));
     box.appendChild(sec);
     // посилання №2 — для студентів (секретне посилання групи) + посилання на пари й правки
     renderGroupTools(box, G.name, '2️⃣ Посилання для студентів');
@@ -2278,6 +2289,8 @@
     await refreshAccess();   // секретне посилання групи / акаунт старости → закріплена група й посилання на пари
     // прийшли за посиланням для старости — одразу форма реєстрації з вибраною групою
     if (regFromUrl && !auth.user && ALL_GROUPS.some((g) => g.name === regFromUrl)) openAccount('register', regFromUrl);
+    // службове посилання #login — форма входу для старост і адміна
+    else if (loginFromUrl) openAccount();
     // перший візит без посилання старости: хай людина вибере свою групу
     else if (!savedSettings.group && !lockedGroup) openGroupPicker();
 
