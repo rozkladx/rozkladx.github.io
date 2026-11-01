@@ -227,13 +227,35 @@ begin
   on conflict (id) do nothing;
 end $$;
 
+-- власний профіль (створює, якщо його ще немає) — без залежності від правил RLS на таблиці
+create or replace function public.my_profile() returns json
+language plpgsql security definer set search_path = public as $$
+declare r public.profiles;
+begin
+  if auth.uid() is null then return null; end if;
+  perform public.ensure_profile();
+  select * into r from public.profiles where id = auth.uid();
+  return row_to_json(r);
+end $$;
+
+-- діагностика: як база бачить поточний запит
+create or replace function public.whoami() returns json
+language sql stable security definer set search_path = public as $$
+  select json_build_object(
+    'uid', auth.uid(),
+    'role', auth.role(),
+    'has_profile', exists (select 1 from public.profiles where id = auth.uid())
+  )
+$$;
+
 -- права на таблиці (у нових проєктах Supabase їх не завжди видає автоматично); доступ далі обмежує RLS
 grant usage on schema public to anon, authenticated;
 grant select on public.schedule_overrides to anon;
 grant select, insert, update, delete on public.profiles, public.lesson_links, public.schedule_overrides, public.group_tokens to authenticated;
 
 -- права для ролей Supabase
-grant execute on function public.ensure_profile() to authenticated;
+grant execute on function public.ensure_profile(), public.my_profile() to authenticated;
+grant execute on function public.whoami() to anon, authenticated;
 grant execute on function public.my_role(), public.my_group(), public.is_admin() to anon, authenticated;
 grant execute on function public.group_by_token(text) to anon, authenticated;
 grant execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text),

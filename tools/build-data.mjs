@@ -99,6 +99,27 @@ async function buildOrders() {
   console.log(`Розпорядження: нових/змінених ${added}, усього ${store.orders.length}`);
 }
 
+// Публічні правки розкладу від старост → data/overrides.json, щоб відвідувачі не навантажували базу.
+// Цей запит заодно не дає безкоштовному проєкту Supabase «заснути» (він засинає після тижня без активності).
+async function exportOverrides() {
+  const cfg = await readFile('js/data.js', 'utf8');
+  const url = process.env.SUPABASE_URL || (cfg.match(/url:\s*'(https:\/\/[^']+supabase\.co)'/) || [])[1];
+  const key = process.env.SUPABASE_ANON_KEY || (cfg.match(/anonKey:\s*'([^']+)'/) || [])[1];
+  if (!url || !key) { console.log('Supabase не налаштовано — пропускаю правки'); return; }
+  const r = await fetch(url + '/rest/v1/schedule_overrides?select=group_name,week,day,pair,subject,teacher,removed&order=group_name,week,day,pair', {
+    headers: { apikey: key, Authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(30000),
+  });
+  if (!r.ok) throw new Error('Supabase: HTTP ' + r.status + ' ' + (await r.text()).slice(0, 200));
+  const rows = await r.json();
+  let prev = null;
+  try { prev = JSON.parse(await readFile('data/overrides.json', 'utf8')); } catch (e) { /* перший запуск */ }
+  // комітимо лише коли правки справді змінились
+  if (prev && JSON.stringify(prev.overrides) === JSON.stringify(rows)) { console.log(`Правки: без змін (${rows.length})`); return; }
+  await writeFile('data/overrides.json', JSON.stringify({ updatedAt: new Date().toISOString(), overrides: rows }, null, 1));
+  console.log(`Правки: збережено ${rows.length}`);
+}
+
 await mkdir('data', { recursive: true });
+try { await exportOverrides(); } catch (e) { console.log('Правки: ' + e.message); }
 await buildOrders();
 if (!process.argv.includes('--only-orders')) await buildSchedules();

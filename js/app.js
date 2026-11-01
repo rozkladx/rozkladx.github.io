@@ -1706,22 +1706,45 @@
     }
     const token = load('rz_group_token', null);
     if (!token) return;
+    // кеш на 30 хв: студент не звертається до бази при кожному відкритті сторінки
+    const cached = load('rz_group_cache', null);
+    const fresh = cached && cached.token === token && Date.now() - cached.at < 30 * 60 * 1000;
+    if (cached && cached.token === token) { lockedGroup = cached.group_name; privateLinks = cached.links || {}; }
+    if (fresh) return;
     const { data, error } = await sb.rpc('group_by_token', { p_token: token });
-    if (error) return;   // немає зв'язку — спробуємо пізніше
+    if (error) return;   // немає зв'язку — лишаємо збережене
     if (!data) {
       save('rz_group_token', null);
+      save('rz_group_cache', null);
+      lockedGroup = null;
+      privateLinks = {};
       toast('Посилання групи застаріло — попросіть нове у старости');
       return;
     }
     lockedGroup = data.group_name;
     privateLinks = data.links || {};
+    save('rz_group_cache', { token, at: Date.now(), group_name: data.group_name, links: privateLinks });
   }
 
+  // Правки розкладу. Звичайні відвідувачі читають файл data/overrides.json (його кожні 30 хв вивантажує
+  // робот GitHub Actions) — так база не навантажується від кожного відкриття сторінки.
+  // Старости й адмін бачать живі дані з бази, щоб одразу бачити свої зміни.
+  let overridesFile = null;
   async function loadOverrides() {
     overrides = [];
-    if (!sb || !G) return;
-    const { data } = await sb.from('schedule_overrides').select('week,day,pair,subject,teacher,removed').eq('group_name', G.name);
-    overrides = data || [];
+    if (!G) return;
+    if (sb && (isStarosta() || isAdmin())) {
+      const { data } = await sb.from('schedule_overrides').select('week,day,pair,subject,teacher,removed').eq('group_name', G.name);
+      overrides = data || [];
+      return;
+    }
+    if (!overridesFile) {
+      try {
+        const r = await fetch('data/overrides.json?t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' });
+        overridesFile = r.ok ? await r.json() : { overrides: [] };
+      } catch (e) { overridesFile = { overrides: [] }; }
+    }
+    overrides = (overridesFile.overrides || []).filter((o) => o.group_name === G.name);
   }
 
   // застосувати доступ: закріплена група, посилання, правки → перемалювати
@@ -1737,15 +1760,17 @@
     auth.profile = null;
     auth.profileError = null;
     if (!sb || !auth.user) return;
-    const read = () => sb.from('profiles').select('*').eq('id', auth.user.id).maybeSingle();
-    let { data, error } = await read();
-    // профілю немає (акаунт створено до тригера або тригер не спрацював) — створюємо з даних реєстрації
-    if (!error && !data) {
-      const r = await sb.rpc('ensure_profile');
-      if (r.error) error = r.error;
-      else ({ data, error } = await read());
-    }
+    // спершу оновлюємо токен входу, щоб запит точно йшов від імені користувача, а не анонімно
+    try { await sb.auth.getSession(); } catch (e) { /* нижче покажемо діагностику */ }
+    // профіль читаємо функцією бази: вона сама знаходить (і за потреби створює) профіль того, хто ввійшов
+    const { data, error } = await sb.rpc('my_profile');
     if (error) auth.profileError = error.message;
+    else if (!data) {
+      const w = await sb.rpc('whoami');
+      auth.profileError = w.error ? w.error.message
+        : !w.data || !w.data.uid ? 'база не отримала токен входу (запит прийшов анонімно) — вийдіть і увійдіть знову'
+        : 'профіль не знайдено для uid ' + w.data.uid;
+    }
     auth.profile = data || null;
   }
 
