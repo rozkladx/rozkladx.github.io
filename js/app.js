@@ -1678,12 +1678,17 @@
   const isStarosta = () => auth.profile && auth.profile.role === 'starosta';
   const isAdmin = () => auth.profile && auth.profile.role === 'admin';
   const groupLink = (token) => location.origin + location.pathname + '#g=' + token;
+  // посилання для старости: одразу відкриває реєстрацію з уже вибраною групою
+  const starostaLink = (group) => location.origin + location.pathname + '#reg=' + encodeURIComponent(group);
+  let regFromUrl = null;
 
-  // секретне посилання групи: #g=… з адреси переносимо в пам'ять браузера й прибираємо з адреси
+  // з адреси: #g=… — секретне посилання групи (для студентів), #reg=… — реєстрація старости
   function takeTokenFromUrl() {
-    const m = location.hash.match(/(?:^#|&)g=([a-f0-9]{16,64})/i);
-    if (!m) return;
-    save('rz_group_token', m[1]);
+    const g = location.hash.match(/(?:^#|&)g=([a-f0-9]{16,64})/i);
+    const reg = location.hash.match(/(?:^#|&)reg=([^&]+)/);
+    if (!g && !reg) return;
+    if (g) save('rz_group_token', g[1]);
+    if (reg) { try { regFromUrl = decodeURIComponent(reg[1]); } catch (e) { regFromUrl = null; } }
     history.replaceState(null, '', location.pathname + location.search);
   }
 
@@ -1756,22 +1761,26 @@
     renderAll();
   }
 
+  // профіль читаємо функцією бази: вона сама знаходить (і за потреби створює) профіль того, хто ввійшов.
+  // Якщо база на мить не відповіла — до 3 спроб, а попередній профіль того самого користувача не скидаємо.
   async function loadProfile() {
-    auth.profile = null;
     auth.profileError = null;
-    if (!sb || !auth.user) return;
-    // спершу оновлюємо токен входу, щоб запит точно йшов від імені користувача, а не анонімно
-    try { await sb.auth.getSession(); } catch (e) { /* нижче покажемо діагностику */ }
-    // профіль читаємо функцією бази: вона сама знаходить (і за потреби створює) профіль того, хто ввійшов
-    const { data, error } = await sb.rpc('my_profile');
-    if (error) auth.profileError = error.message;
-    else if (!data) {
+    if (!sb || !auth.user) { auth.profile = null; return; }
+    const keep = auth.profile && auth.profile.id === auth.user.id ? auth.profile : null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const { data, error } = await sb.rpc('my_profile');
+      if (data) { auth.profile = data; return; }
+      auth.profileError = error ? error.message : null;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 700 * attempt));
+    }
+    if (keep) { auth.profile = keep; auth.profileError = null; return; }
+    auth.profile = null;
+    if (!auth.profileError) {
       const w = await sb.rpc('whoami');
       auth.profileError = w.error ? w.error.message
-        : !w.data || !w.data.uid ? 'база не отримала токен входу (запит прийшов анонімно) — вийдіть і увійдіть знову'
+        : !w.data || !w.data.uid ? 'база не отримала токен входу — вийдіть і увійдіть знову'
         : 'профіль не знайдено для uid ' + w.data.uid;
     }
-    auth.profile = data || null;
   }
 
   async function initAuth() {
@@ -1780,14 +1789,20 @@
     const { data } = await sb.auth.getSession();
     auth.user = data.session ? data.session.user : null;
     await loadProfile();
-    sb.auth.onAuthStateChange(async (event, session) => {
+    // Увага: всередині цього обробника НЕ можна чекати інших запитів Supabase — бібліотека тримає блокування
+    // сесії, і запит повертається порожнім. Тому вся робота — через setTimeout, уже після обробника.
+    sb.auth.onAuthStateChange((event, session) => {
+      const prevId = auth.user && auth.user.id;
       auth.user = session ? session.user : null;
-      if (event === 'PASSWORD_RECOVERY') { openAccount('newpass'); return; }
-      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+      if (event === 'PASSWORD_RECOVERY') { setTimeout(() => openAccount('newpass'), 0); return; }
+      // при поверненні на вкладку Supabase повторно надсилає SIGNED_IN — той самий користувач, нічого не робимо
+      if (event === 'SIGNED_IN' && session && prevId === session.user.id && auth.profile) return;
+      if (event !== 'SIGNED_IN' && event !== 'SIGNED_OUT' && event !== 'USER_UPDATED') return;
+      setTimeout(async () => {
         await loadProfile();
         await refreshAccess();
         if (!$('modal').hidden && $('modalBody').querySelector('.acc')) openAccount();
-      }
+      }, 0);
     });
   }
 
@@ -1816,7 +1831,7 @@
     return s;
   }
 
-  function openAccount(mode) {
+  function openAccount(mode, presetGroup, retried) {
     const box = el('div', 'acc');
     box.appendChild(el('div', 'modal__kicker', C.siteName + ' · кабінет старости'));
     if (!sb) {
@@ -1825,8 +1840,15 @@
       openModal(box);
       return;
     }
+    // увійшли, але профіль ще не підвантажився — тихо дочитуємо, а не лякаємо помилкою
+    if (auth.user && !auth.profile && !retried && mode !== 'newpass') {
+      box.appendChild(el('h3', 'modal__title', 'Завантаження профілю…'));
+      openModal(box);
+      loadProfile().then(() => refreshAccess()).then(() => openAccount(mode, presetGroup, true));
+      return;
+    }
     if (mode === 'newpass') renderNewPassword(box);
-    else if (!auth.user) renderLogin(box, mode === 'register');
+    else if (!auth.user) renderLogin(box, mode === 'register', presetGroup);
     else if (!auth.profile) renderNoProfile(box);
     else if (isAdmin()) renderAdmin(box);
     else if (isStarosta()) renderStarosta(box);
@@ -1843,11 +1865,11 @@
     return a.length < ATTEMPT_MAX ? 0 : Math.ceil((a[0] + ATTEMPT_WINDOW - Date.now()) / 1000);
   }
 
-  function renderLogin(box, register) {
+  function renderLogin(box, register, presetGroup) {
     box.appendChild(el('h3', 'modal__title', register ? 'Реєстрація старости' : 'Вхід для старост'));
     const tabs = el('div', 'seg seg--sm acc__tabs');
     const tLogin = btn('Вхід', 'seg__btn' + (register ? '' : ' is-active'), () => openAccount());
-    const tReg = btn('Реєстрація', 'seg__btn' + (register ? ' is-active' : ''), () => openAccount('register'));
+    const tReg = btn('Реєстрація', 'seg__btn' + (register ? ' is-active' : ''), () => openAccount('register', presetGroup));
     tabs.append(tLogin, tReg);
     box.appendChild(tabs);
     const email = inp('email', 'пошта@приклад.com');
@@ -1857,7 +1879,8 @@
     const msg = msgBox();
     if (register) {
       const name = inp('text', 'Прізвище Ім\'я');
-      const grp = groupSelect(G ? G.name : '');
+      const grp = groupSelect(presetGroup || (G ? G.name : ''));
+      if (presetGroup) grp.disabled = true;   // прийшов за посиланням для старости конкретної групи
       box.append(field('ПІБ', name), field('Ваша група', grp), field('Пошта', email), field('Пароль', pass));
       box.appendChild(el('p', 'hint', 'Після реєстрації заявку підтверджує адміністратор сайту. Редагувати можна буде лише вибрану групу.'));
       const go = btn('Надіслати заявку', 'btn--accent');
@@ -1954,9 +1977,9 @@
   }
 
   // інструменти групи (староста — своєї, адмін — будь-якої): секретне посилання, посилання на пари, правки
-  function renderGroupTools(box, groupName) {
+  function renderGroupTools(box, groupName, linkTitle) {
     const sec = el('section', 'acc__sec');
-    sec.appendChild(el('h4', 'h3', '🔗 Посилання для групи'));
+    sec.appendChild(el('h4', 'h3', linkTitle || '🔗 Посилання для студентів групи'));
     sec.appendChild(el('p', 'hint', 'Надішліть його в чат групи. Хто відкриє — побачить посилання на пари саме цієї групи, а сайт закріпиться за нею.'));
     const linkOut = inp('text', 'завантаження…');
     linkOut.readOnly = true;
@@ -2120,7 +2143,20 @@
     pick.appendChild(el('span', null, `Редагуєте групу: ${G.title}`));
     pick.appendChild(btn('Змінити групу', 'btn--ghost btn--sm', () => { reopenAdminAfterPick = true; closeModal(); openGroupPicker(); }));
     box.appendChild(pick);
-    renderGroupTools(box, G.name);
+    // посилання №1 — для старости: відкриває реєстрацію з уже вибраною групою (заявку все одно підтверджуєте ви)
+    const sec = el('section', 'acc__sec');
+    sec.appendChild(el('h4', 'h3', '1️⃣ Посилання для старости'));
+    sec.appendChild(el('p', 'hint', `Надішліть старості ${G.title}: відкриється реєстрація з уже вибраною групою. Заявка з'явиться у «👥 Акаунти».`));
+    const out = inp('text', '', starostaLink(G.name));
+    out.readOnly = true;
+    const m = msgBox();
+    const copy = btn('Копіювати', 'btn--accent btn--sm', async () => {
+      try { await navigator.clipboard.writeText(out.value); say(m, 'Скопійовано ✓'); } catch (e) { out.select(); say(m, 'Скопіюйте вручну (Ctrl+C)'); }
+    });
+    sec.append(out, copy, m);
+    box.appendChild(sec);
+    // посилання №2 — для студентів (секретне посилання групи) + посилання на пари й правки
+    renderGroupTools(box, G.name, '2️⃣ Посилання для студентів');
   }
 
   function renderAdminUsers(box) {
@@ -2171,19 +2207,27 @@
         const r = el('div', 'acc__orow acc__orow--wrap');
         const info = el('div');
         info.append(el('strong', null, (p.full_name || '—') + (me ? ' (ви)' : '')), el('div', 'hint', p.email));
+        // власний рядок — просто підпис: себе не змінюємо
+        if (me) {
+          r.append(info, el('span', 'badge', ROLE_LABEL[p.role]));
+          allList.appendChild(r);
+          continue;
+        }
+        // роль і група зберігаються одразу при виборі — без окремої кнопки
         const role = roleSelect(p.role);
         const grp = groupSelect(p.group_name || '');
-        const syncGrp = () => { grp.disabled = role.value === 'admin'; };
-        role.addEventListener('change', syncGrp);
-        syncGrp();
-        const saveB = btn('Зберегти', 'btn--accent btn--sm', () => busy(saveB, async () => {
-          if (role.value === 'starosta' && !grp.value) return say(msg, 'Старості потрібна група', true);
-          if (me && role.value !== 'admin') return say(msg, 'Не можна зняти адмінку з самого себе', true);
-          if (role.value === 'admin' && !me && !confirm(`Дати ${p.full_name || p.email} повні права адміністратора?`)) return;
-          await setRole(p, role.value, role.value === 'admin' ? null : grp.value);
-        }));
-        r.append(info, role, grp, saveB);
-        if (!me) {
+        grp.disabled = p.role === 'admin';
+        const apply = async () => {
+          if (role.value === 'starosta' && !grp.value) { grp.disabled = false; grp.focus(); return say(msg, 'Оберіть групу для старости', true); }
+          if (role.value === 'admin' && p.role !== 'admin' && !confirm(`Дати ${p.full_name || p.email} повні права адміністратора?`)) { role.value = p.role; return; }
+          role.disabled = grp.disabled = true;
+          const ok = await setRole(p, role.value, role.value === 'admin' ? null : grp.value);
+          if (!ok) { role.value = p.role; grp.value = p.group_name || ''; role.disabled = false; grp.disabled = p.role === 'admin'; }
+        };
+        role.addEventListener('change', apply);
+        grp.addEventListener('change', apply);
+        r.append(info, role, grp);
+        {
           const delB = btn('Видалити', 'btn--ghost btn--sm', () => busy(delB, async () => {
             if (!confirm(`Повністю видалити акаунт ${p.email}? Відновити не можна.`)) return;
             const { error: e } = await sb.rpc('admin_delete_user', { p_user: p.id });
@@ -2232,8 +2276,10 @@
     await Promise.all([loadSchedules(), initAuth()]);
     setGroup(settings.group);
     await refreshAccess();   // секретне посилання групи / акаунт старости → закріплена група й посилання на пари
+    // прийшли за посиланням для старости — одразу форма реєстрації з вибраною групою
+    if (regFromUrl && !auth.user && ALL_GROUPS.some((g) => g.name === regFromUrl)) openAccount('register', regFromUrl);
     // перший візит без посилання старости: хай людина вибере свою групу
-    if (!savedSettings.group && !lockedGroup) openGroupPicker();
+    else if (!savedSettings.group && !lockedGroup) openGroupPicker();
 
     let lastMinute = -1;
     let lastAlertPoll = Date.now();
