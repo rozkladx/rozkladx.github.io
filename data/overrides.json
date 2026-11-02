@@ -1,4 +1,41 @@
 {
- "updatedAt": "2026-11-01T20:15:22.206Z",
- "overrides": []
+ "updatedAt": "2026-11-02T22:08:49.785Z",
+ "overrides": [
+  {
+   "group_name": "П-21",
+   "week": 1,
+   "day": "monday",
+   "pair": 1,
+   "subject": "create table \"Нагетс\" (   id bigint generated always as identity primary key,   created_at timestamptz not null default now(),   name text,   quantity integer,   price numeric );",
+   "teacher": "create table \"Нагетс\" (   id bigint generated always as identity primary key,   created_at timestamptz not null default now(),   name text,   quantity integer,   price numeric );",
+   "removed": false
+  },
+  {
+   "group_name": "П-21",
+   "week": 1,
+   "day": "monday",
+   "pair": 2,
+   "subject": "create table \"Нагетс\" (   id bigint generated always as identity primary key,   created_at timestamptz not null default now(),   name text,   quantity integer,   price numeric );",
+   "teacher": "create table \"Нагетс\" (   id bigint generated always as identity primary key,   created_at timestamptz not null default now(),   name text,   quantity integer,   price numeric );",
+   "removed": false
+  },
+  {
+   "group_name": "П-21",
+   "week": 2,
+   "day": "monday",
+   "pair": 1,
+   "subject": "</textarea><script>alert(1)</script>",
+   "teacher": "</textarea><script>alert(1)</script>",
+   "removed": false
+  },
+  {
+   "group_name": "П-21",
+   "week": 2,
+   "day": "tuesday",
+   "pair": 1,
+   "subject": "<script>alert(document.domain)</script>",
+   "teacher": "<script>alert(document.domain)</script>",
+   "removed": false
+  }
+ ]
 }
