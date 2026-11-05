@@ -671,6 +671,7 @@ td.grid__no span { display: block; }
 }
 .field select option, .sat-select option { background: var(--bg); color: var(--text); }
 .field input:focus, .field select:focus { border-color: var(--accent); }
+.acc__link input.is-bad { border-color: var(--hot); background: color-mix(in srgb, var(--hot) 10%, transparent); }
 .switch-row { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; margin-bottom: 12px; cursor: pointer; }
 .switch-row input { width: 18px; height: 18px; accent-color: var(--accent); margin-top: 1px; flex-shrink: 0; }
 .row-btns { display: flex; gap: 8px; margin-bottom: 10px; }

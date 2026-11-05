@@ -161,7 +161,8 @@
 
   // посилання на пару; ключ «Прізвище» або «Прізвище|початок назви предмета»
   function linkFor(subject, teacher) {
-    const map = privateLinks;
+    // лише дозволені посилання (Zoom/Meet/Discord) — старі сторонні, напр. YouTube, не показуємо
+    const map = Object.fromEntries(Object.entries(privateLinks).filter(([, u]) => isLessonUrl(u)));
     const sn = surname(teacher);
     if (!sn) return '';
     let best = '';
@@ -1540,6 +1541,16 @@
     }
   }
 
+  // клік по фону вікна: спрацьовує, лише якщо натиснули й відпустили саме на фоні
+  function onBackdropClick(node, fn) {
+    let downOnBackdrop = false;
+    node.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === node; });
+    node.addEventListener('click', (e) => {
+      if (downOnBackdrop && e.target === node) fn();
+      downOnBackdrop = false;
+    });
+  }
+
   function initSettings() {
     buildThemes();
     buildMixer();
@@ -1548,7 +1559,7 @@
     $('openSettings').addEventListener('click', () => openDrawer('style'));
     $('openMixer').addEventListener('click', () => openDrawer('sound'));
     $('closeDrawer').addEventListener('click', closeDrawer);
-    $('drawerBg').addEventListener('click', closeDrawer);
+    onBackdropClick($('drawerBg'), closeDrawer);
     document.querySelectorAll('.tabs__btn').forEach((b) => b.addEventListener('click', () => selectTab(b.dataset.tab)));
     $('themeQuick').addEventListener('click', () => {
       const i = THEMES.findIndex((t) => t.id === settings.theme);
@@ -1607,7 +1618,9 @@
       else closeDrawer();
     });
     $('modalClose').addEventListener('click', closeModal);
-    $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) closeModal(); });
+    // закриваємо лише справжній клік по фону: і натискання, і відпускання миші — поза вікном.
+    // Інакше виділення тексту в полі з «витяганням» миші за межі вікна закривало б панель.
+    onBackdropClick($('modal'), closeModal);
     meterLoop();
   }
 
@@ -2016,6 +2029,11 @@
     box.appendChild(renderOverridesEditor(groupName));
   }
 
+  // дозволені посилання на пари: Zoom, Google Meet, Discord — з конкретною зустріччю/запрошенням у шляху.
+  // Таке саме правило стоїть і в базі (public.is_lesson_url), тож обійти його через API не вийде.
+  const LESSON_URL_RE = /^https:\/\/(?:(?:[a-z0-9-]+\.)*zoom\.us\/(?:j|my|w|s)\/[^\s]+|meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:[?#][^\s]*)?|(?:discord\.gg|(?:www\.|ptb\.|canary\.)?discord\.com\/(?:invite|channels))\/[^\s]+)$/i;
+  const isLessonUrl = (u) => LESSON_URL_RE.test(String(u || '').trim());
+
   // список «викладач → посилання» для всіх викладачів групи
   function renderLinksEditor(groupName) {
     const sec = el('section', 'acc__sec');
@@ -2036,7 +2054,10 @@
     for (const [sn, info] of [...teachers.entries()].sort((a, b) => a[0].localeCompare(b[0], 'uk'))) {
       const mk = (key, label, sub) => {
         const r = el('div', 'acc__link' + (sub ? ' is-sub' : ''));
-        const i = inp('url', 'https://… (порожньо — без посилання)', privateLinks[key] || '');
+        const i = inp('url', 'Zoom / Google Meet / Discord (порожньо — без посилання)', privateLinks[key] || '');
+        const mark = () => i.classList.toggle('is-bad', !!i.value.trim() && !isLessonUrl(i.value));
+        i.addEventListener('input', mark);
+        mark();   // старі неприпустимі посилання одразу видно червоним
         r.append(el('span', 'acc__who', label), i);
         rows.push({ key, i });
         list.appendChild(r);
@@ -2048,8 +2069,8 @@
     const msg = msgBox();
     const saveBtn = btn('Зберегти посилання', 'btn--accent btn--sm');
     saveBtn.addEventListener('click', () => busy(saveBtn, async () => {
-      const bad = rows.find((r) => r.i.value.trim() && !/^https?:\/\//i.test(r.i.value.trim()));
-      if (bad) { bad.i.focus(); return say(msg, 'Посилання має починатися з https://', true); }
+      const bad = rows.find((r) => r.i.value.trim() && !isLessonUrl(r.i.value));
+      if (bad) { bad.i.focus(); return say(msg, 'Дозволені лише посилання на пару в Zoom, Google Meet або Discord', true); }
       const up = rows.filter((r) => r.i.value.trim()).map((r) => ({ group_name: groupName, teacher_key: r.key, url: r.i.value.trim(), updated_by: auth.user.id, updated_at: new Date().toISOString() }));
       const del = rows.filter((r) => !r.i.value.trim() && privateLinks[r.key]).map((r) => r.key);
       if (up.length) { const { error } = await sb.from('lesson_links').upsert(up); if (error) return say(msg, 'Помилка: ' + error.message, true); }
@@ -2135,7 +2156,7 @@
   // адмін: без прив'язки до групи; інструменти старости для будь-якої групи + керування всіма акаунтами
   function renderAdmin(box) {
     const head = el('div', 'acc__head');
-    head.append(el('h3', 'modal__title', 'Адміністратор'), logoutBtn());
+    head.append(el('h3', 'modal__title', auth.profile.is_owner ? '👑 Головний адміністратор' : 'Адміністратор'), logoutBtn());
     box.appendChild(head);
     box.appendChild(el('p', 'hint', `${auth.profile.full_name || auth.profile.email} · без прив'язки до групи, доступ до всіх груп`));
     const tabs = el('div', 'seg seg--sm acc__tabs');
@@ -2218,9 +2239,9 @@
         const r = el('div', 'acc__orow acc__orow--wrap');
         const info = el('div');
         info.append(el('strong', null, (p.full_name || '—') + (me ? ' (ви)' : '')), el('div', 'hint', p.email));
-        // власний рядок — просто підпис: себе не змінюємо
-        if (me) {
-          r.append(info, el('span', 'badge', ROLE_LABEL[p.role]));
+        // власний рядок і головний адмін — просто підпис: їх не змінюють
+        if (me || p.is_owner) {
+          r.append(info, el('span', 'badge', p.is_owner ? '👑 Глав. адмін' : ROLE_LABEL[p.role]));
           allList.appendChild(r);
           continue;
         }

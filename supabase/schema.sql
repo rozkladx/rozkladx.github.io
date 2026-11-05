@@ -263,6 +263,69 @@ grant execute on function public.my_group_token(), public.rotate_group_token(), 
 revoke execute on function public.my_group_token(), public.rotate_group_token(), public.admin_set_role(uuid, text, text),
   public.get_group_token(text), public.rotate_group_token_for(text), public.admin_delete_user(uuid) from anon, public;
 
+-- ---------- Посилання на пари: лише Zoom, Google Meet, Discord ----------
+create or replace function public.is_lesson_url(u text) returns boolean
+language sql immutable as $$
+  select coalesce(u ~* '^https://((([a-z0-9-]+\.)*zoom\.us/(j|my|w|s)/[^[:space:]]+)|(meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}([?#][^[:space:]]*)?)|((discord\.gg|(www\.|ptb\.|canary\.)?discord\.com/(invite|channels))/[^[:space:]]+))$', false)
+$$;
+alter table public.lesson_links drop constraint if exists lesson_links_url_check;
+alter table public.lesson_links drop constraint if exists lesson_links_url_allowed;
+-- not valid: старі записи не ламають міграцію, але нові/змінені мусять пройти перевірку
+alter table public.lesson_links add constraint lesson_links_url_allowed check (public.is_lesson_url(url)) not valid;
+
+-- студенти отримують лише дозволені посилання
+create or replace function public.group_by_token(p_token text) returns json
+language plpgsql stable security definer set search_path = public as $$
+declare g text;
+begin
+  select group_name into g from public.group_tokens where token = p_token;
+  if g is null then return null; end if;
+  return json_build_object(
+    'group_name', g,
+    'links', coalesce((select json_object_agg(teacher_key, url) from public.lesson_links
+                        where group_name = g and public.is_lesson_url(url)), '{}'::json)
+  );
+end $$;
+
+-- ---------- Головний адмін: його не можуть змінити чи видалити інші адміни ----------
+alter table public.profiles add column if not exists is_owner boolean not null default false;
+-- профілі змінюються лише через функції з перевірками (не напряму через API)
+drop policy if exists "profiles: адмін змінює" on public.profiles;
+
+create or replace function public.admin_set_role(p_user uuid, p_role text, p_group text default null) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Лише адмін'; end if;
+  if p_role not in ('pending', 'starosta', 'admin', 'rejected') then raise exception 'Невідома роль'; end if;
+  if (select is_owner from public.profiles where id = p_user) then raise exception 'Головного адміна змінювати не можна'; end if;
+  if p_user = auth.uid() and p_role <> 'admin' then raise exception 'Не можна зняти роль адміна з самого себе'; end if;
+  if p_role = 'starosta' and nullif(p_group, '') is null
+     and (select group_name from public.profiles where id = p_user) is null then
+    raise exception 'Для старости потрібна група';
+  end if;
+  update public.profiles
+     set role = p_role,
+         group_name = case when p_role = 'admin' then null else coalesce(nullif(p_group, ''), group_name) end,
+         approved_at = case when p_role in ('starosta', 'admin') then now() else approved_at end
+   where id = p_user;
+end $$;
+
+create or replace function public.admin_delete_user(p_user uuid) returns void
+language plpgsql security definer set search_path = public, auth as $$
+begin
+  if not public.is_admin() then raise exception 'Лише адмін'; end if;
+  if p_user = auth.uid() then raise exception 'Не можна видалити власний акаунт'; end if;
+  if (select is_owner from public.profiles where id = p_user) then raise exception 'Головного адміна видалити не можна'; end if;
+  delete from auth.users where id = p_user;
+end $$;
+
+grant execute on function public.is_lesson_url(text) to anon, authenticated;
+
+-- =====================================================================
+-- Головного адміна призначають лише тут, у SQL Editor (з сайту — неможливо):
+--   update public.profiles set is_owner = true, role = 'admin', group_name = null where email = 'ваша@пошта';
+-- =====================================================================
+
 -- =====================================================================
 -- ПІСЛЯ того, як ви самі зареєструєтесь на сайті, зробіть себе адміном
 -- (замініть пошту на свою і виконайте лише цей рядок):
