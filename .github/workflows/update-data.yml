@@ -38,6 +38,9 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Зібрати дані
+        env:
+          # ключ service_role з Supabase → Settings → API; без нього дані пишуться лише у файли data/*.json
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.schedules }}" = "true" ] || [ "${{ github.event.schedule }}" = "17 3 * * *" ]; then
             node tools/build-data.mjs

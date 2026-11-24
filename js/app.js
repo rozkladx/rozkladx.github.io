@@ -119,8 +119,22 @@
   // «група П-782-42» → «П-782-42»
   const titleOf = (g) => (g.title || '').replace(/^груп[аи]\s+/i, '').trim() || g.name;
 
+  // з бази (C.dataSource = 'db'); null — бази немає або вона не відповіла, тоді беремо файл
+  async function loadSchedulesFromDb() {
+    if (C.dataSource !== 'db' || !sb) return null;
+    try {
+      const { data, error } = await sb.from('schedule_current')
+        .select('name,course,title,pdf,schedule,error,checked_at').order('sort').limit(1000);
+      if (error || !data || data.length < 10) return null;
+      const generatedAt = data.reduce((m, g) => (g.checked_at > m ? g.checked_at : m), '');
+      return { generatedAt, source: 'db', groups: data.map(({ checked_at, ...g }) => (g.error ? g : { ...g, error: undefined })) };
+    } catch (e) { return null; }
+  }
+
   async function loadSchedules() {
     const ver = (document.querySelector('meta[name="app-version"]') || {}).content || '';
+    const fromDb = await loadSchedulesFromDb();
+    if (fromDb) { save('rz_schedules', fromDb); applySchedules(fromDb); return; }
     try {
       const r = await fetch('data/schedules.json?v=' + encodeURIComponent(ver) + '&t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -135,10 +149,66 @@
   function applySchedules(j) {
     ALL_GROUPS = (j.groups || []).map((g) => ({ ...g, title: titleOf(g) }));
     schedulesMeta.generatedAt = j.generatedAt || null;
+    buildTeachers();
   }
 
-  let G = null;   // поточна група
+  /* ---------- Викладачі ---------- */
+  // Окремих розкладів викладачів коледж не публікує — збираємо їх із розкладів усіх груп.
+  // У налаштуваннях вибір викладача зберігається як «teacher:Прізвище І.Б.».
+  const TEACHER_PREFIX = 'teacher:';
+  const isTeacherKey = (name) => String(name || '').startsWith(TEACHER_PREFIX);
+  // «Кравець С. М.» і «Кравець С.М.» — одна людина
+  const cleanTeacher = (s) => String(s || '').replace(/\s+/g, ' ').replace(/\.\s+(?=\S)/g, '.').trim();
+  let TEACHERS = new Map();   // ім'я → [{group, course, week, day, pair, subject}]
+  function buildTeachers() {
+    const map = new Map();
+    for (const g of ALL_GROUPS) {
+      if (!g.schedule) continue;
+      for (const [week, days] of Object.entries(g.schedule)) {
+        for (const [day, list] of Object.entries(days)) {
+          (list || []).forEach((l, i) => {
+            if (!l || !l.t) return;
+            // «Крещанова С.Л., Чепур О.О.» — пара двох викладачів (підгрупи)
+            for (const part of l.t.split(/[,;]/)) {
+              const t = cleanTeacher(part);
+              if (!t) continue;
+              if (!map.has(t)) map.set(t, []);
+              map.get(t).push({ group: g.name, course: g.course, week: Number(week), day, pair: i + 1, subject: l.n });
+            }
+          });
+        }
+      }
+    }
+    TEACHERS = new Map([...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'uk')));
+  }
+  const groupsWord = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'група' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'групи' : 'груп');
+
+  let G = null;   // поточна група (або викладач — тоді G.teacher)
   function setGroup(name) {
+    if (isTeacherKey(name)) {
+      const t = name.slice(TEACHER_PREFIX.length);
+      const entries = TEACHERS.get(t) || [];
+      // курс, за яким підписуються робочі суботи в заголовках, — той, у якому в нього найбільше пар;
+      // самі пари в суботу рахуються окремо за курсом кожної групи
+      const cnt = {};
+      for (const e of entries) cnt[e.course] = (cnt[e.course] || 0) + 1;
+      const course = Number(Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]) || 4;
+      G = {
+        name,
+        teacher: t,
+        entries,
+        groups: [...new Set(entries.map((e) => e.group))],
+        course,
+        title: t,
+        sch: { schedule: {} },
+        stale: false,
+        codes: [],
+        pdf: C.links.schedule,
+      };
+      settings.group = name;
+      saveSettings();
+      return;
+    }
     const g = ALL_GROUPS.find((x) => x.name === name) || { name, course: courseOf(name), title: name };
     G = {
       name: g.name,
@@ -194,10 +264,11 @@
   const cycleIndex = (o) => (o.week - 1) * 5 + WORK_DAYS.indexOf(o.day);
   const fromCycle = (i) => { i = ((i % 10) + 10) % 10; return { day: WORK_DAYS[i % 5], week: i < 5 ? 1 : 2 }; };
 
-  const satAnchor = () => C.saturdayAnchors[G.course] || C.saturdayAnchors[4];
+  const satAnchor = (course = G.course) => C.saturdayAnchors[course] || C.saturdayAnchors[4];
 
   // джерело правди для суботи: ручне налаштування → data.js → розпорядження → коло від відомої суботи
-  function saturdayPlan(key) {
+  // course — для розкладу викладача: у його груп різних курсів субота може йти за різні дні
+  function saturdayPlan(key, course = G.course) {
     const man = settings.satOverride[key];
     if (man === 'off') return { off: true, source: 'manual' };
     if (man) return { ...man, source: 'manual' };
@@ -206,19 +277,19 @@
       return v ? { ...v, source: 'config' } : { off: true, source: 'config' };
     }
     const ord = ordersByDate().get(key);
-    const rule = ord && ord.satNote ? parseSatRule(ord.satNote, G.course) : null;
+    const rule = ord && ord.satNote ? parseSatRule(ord.satNote, course) : null;
     if (rule) return { ...rule, source: 'order', order: ord };
-    const a = satAnchor();
+    const a = satAnchor(course);
     const n = Math.round((parseKey(key) - parseKey(a.date)) / (7 * DAY_MS));
     return { ...fromCycle(cycleIndex(a) + n), source: 'auto' };
   }
 
   // за яким днем/тижнем іде дата
-  function dayPlan(key) {
+  function dayPlan(key, course = G.course) {
     const wd = weekdayOf(key);
     if (wd === 'sunday') return null;
     if (wd === 'saturday') {
-      const p = saturdayPlan(key);
+      const p = saturdayPlan(key, course);
       return p.off ? null : { day: p.day, week: p.week, saturday: p };
     }
     return { day: wd, week: weekNumberFor(key) };
@@ -266,7 +337,24 @@
   }
 
   /* ---------- Пари на дату ---------- */
+  // пари викладача: з розкладів усіх його груп; кілька груп в одну пару (потокова лекція) — одна картка
+  function teacherLessons(key) {
+    const plans = new Map();
+    const out = new Map();
+    for (const e of G.entries) {
+      if (!plans.has(e.course)) plans.set(e.course, dayPlan(key, e.course));
+      const p = plans.get(e.course);
+      if (!p || p.week !== e.week || p.day !== e.day) continue;
+      const cur = out.get(e.pair) || { no: e.pair, subjects: [], groups: [], link: '', byTeacher: true };
+      if (!cur.subjects.includes(e.subject)) cur.subjects.push(e.subject);
+      if (!cur.groups.includes(e.group)) cur.groups.push(e.group);
+      out.set(e.pair, cur);
+    }
+    return [...out.values()].map((l) => ({ ...l, subject: l.subjects.join(' / '), teacher: l.groups.join(', ') }));
+  }
+
   function getLessons(key) {
+    if (G.teacher) return withBells(key, teacherLessons(key));
     const plan = dayPlan(key);
     const out = new Map();
     if (plan && G.sch) {
@@ -300,7 +388,10 @@
       }
     }
 
-    return [...out.values()].sort((a, b) => a.no - b.no).map((l) => {
+    return withBells(key, [...out.values()]);
+  }
+  function withBells(key, lessons) {
+    return lessons.sort((a, b) => a.no - b.no).map((l) => {
       const bell = C.bells[l.no - 1];
       // startStr/endStr — у поясі пристрою; start/end — секунди дня в часі коледжу (для таймерів)
       return { ...l, startStr: bell ? localHM(key, bell.start) : '', endStr: bell ? localHM(key, bell.end) : '',
@@ -454,20 +545,37 @@
     if (!o) return [];
     return o.rows.filter(isMine).map((r) => ({ ...r, order: o }));
   }
-  const isMine = (r) => r.group.split(/[,;/]/).some((g) => G.codes.includes(normGroup(g)));
+  // для викладача «свої» — рядки, де він у колонці «за розкладом» або «заміна» (за прізвищем)
+  const isMine = (r) => (G.teacher
+    ? [r.fromTeacher, r.toTeacher].some((t) => t && surname(t) === surname(G.teacher))
+    : r.group.split(/[,;/]/).some((g) => G.codes.includes(normGroup(g))));
 
   // спільний архів розпоряджень (його веде GitHub Actions у data/orders.json) — видно й старі, які вже зникли з Drive
+  // з бази — повний архів (C.ordersHistory штук), інакше — файл з останніми 80
+  async function orderArchiveFromDb() {
+    if (C.dataSource !== 'db' || !sb) return null;
+    try {
+      const { data, error } = await sb.from('order_archive').select('csv,fetched_at')
+        .order('fetched_at', { ascending: false }).limit(C.ordersHistory || 200);
+      if (error || !data || !data.length) return null;
+      return data.map((r) => ({ csv: r.csv, fetchedAt: r.fetched_at }));
+    } catch (e) { return null; }
+  }
+
   async function loadOrderArchive() {
     try {
-      const r = await fetch('data/orders.json?t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' });
-      if (!r.ok) return;
-      const j = await r.json();
+      let list = await orderArchiveFromDb();
+      if (!list) {
+        const r = await fetch('data/orders.json?t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' });
+        if (!r.ok) return;
+        list = (await r.json()).orders || [];
+      }
       const map = new Map(orders.map((o) => [o.id, o]));
-      for (const a of j.orders || []) {
+      for (const a of list) {
         const o = parseOrder(parseCSV(a.csv));
         if ((o.rows.length || o.dateKey) && !map.has(o.id)) map.set(o.id, { ...o, fetchedAt: Date.parse(a.fetchedAt) || 0 });
       }
-      orders = [...map.values()].sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || '') || (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 80);
+      orders = [...map.values()].sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || '') || (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, C.ordersHistory || 80);
       save('rz_orders', orders);
     } catch (e) { /* архів необов'язковий */ }
   }
@@ -511,7 +619,7 @@
       if (seen !== null && sig !== seen && sig !== prevSig) {
         playSound('sub');
         toast('📄 Нові зміни в розкладі для ' + G.title);
-        notify('Нові заміни', 'Є зміни в розкладі для групи ' + G.title);
+        notify('Нові заміни', (G.teacher ? 'Є заміни за участю викладача ' : 'Є зміни в розкладі для групи ') + G.title);
       }
       save('rz_seen_sig', sig);
     } catch (e) {
@@ -1178,6 +1286,13 @@
     box.textContent = '';
     box.classList.toggle('no-sch--ok', !!G.sch && !G.stale);
     const upd = schedulesMeta.generatedAt ? fmt(viewTZ(), { day: '2-digit', month: '2-digit', ...HM }).format(new Date(schedulesMeta.generatedAt)) : '';
+    if (G.teacher) {
+      box.classList.toggle('no-sch--ok', G.entries.length > 0);
+      box.appendChild(el('div', null, G.entries.length
+        ? `Розклад викладача зібрано з розкладів ${G.groups.length} ${groupsWord(G.groups.length)}${upd ? ' · перевірено ' + upd : ''}. Заміни в сітці не враховано — вони в розпорядженнях нижче.`
+        : `У розкладах груп немає пар викладача ${G.title}.`));
+      return;
+    }
     let text;
     if (!G.sch) text = `Не вдалося прочитати розклад ${G.title} з сайту коледжу — тут видно лише заміни з розпоряджень.`;
     else if (G.stale) text = `Розклад ${G.title} — з попередньої перевірки: свіжий PDF коледжу не вдалося прочитати.`;
@@ -1250,7 +1365,7 @@
 
       const rows = state.filter === 'mine' ? o.rows.filter(isMine) : o.rows;
       if (!rows.length) {
-        det.appendChild(el('div', 'empty empty--sm', state.filter === 'mine' ? 'Для вашої групи змін немає' : 'Таблиця порожня'));
+        det.appendChild(el('div', 'empty empty--sm', state.filter === 'mine' ? (G.teacher ? 'Для цього викладача змін немає' : 'Для вашої групи змін немає') : 'Таблиця порожня'));
       } else {
         const wrap = el('div', 'table-wrap');
         const t = el('table', 'otable');
@@ -1306,7 +1421,7 @@
     const row = (k, v) => { if (!v) return; const r = el('div', 'modal__row'); r.append(el('span', null, k), el('strong', null, v)); info.appendChild(r); };
     row('Час' + (l.startStr !== l.collegeStart ? ` (${tzLabel(viewTZ())})` : ''), `${l.startStr} – ${l.endStr}`);
     if (l.startStr !== l.collegeStart) row(`У коледжі (${tzLabel(TZ)})`, `${l.collegeStart} – ${l.collegeEnd}`);
-    row('Викладач', l.teacher);
+    row(l.byTeacher ? (l.groups.length > 1 ? 'Групи' : 'Група') : 'Викладач', l.teacher);
     if (l.change === 'replace' && l.orig) row('За розкладом', [l.orig.subject, l.orig.teacher].filter(Boolean).join(' · '));
     if (l.change === 'cancel') row('Статус', 'Скасовано / перенесено' + (l.note ? ` (${l.note})` : ''));
     if (l.order) row('Підстава', `Розпорядження №${l.order.number || '?'}`);
@@ -1335,21 +1450,36 @@
       return;
     }
     box.appendChild(el('div', 'modal__kicker', C.college));
-    box.appendChild(el('h3', 'modal__title', 'Оберіть групу'));
+    box.appendChild(el('h3', 'modal__title', 'Оберіть групу або викладача'));
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'gp__search';
-    search.placeholder = 'Пошук: П-42, К-3…';
+    search.placeholder = 'Пошук: П-42, К-3, прізвище…';
     box.appendChild(search);
     const seg = el('div', 'seg seg--sm gp__courses');
-    let course = G.course;
+    let course = G.teacher ? 'teachers' : G.course;   // номер курсу або 'teachers'
     const list = el('div', 'gp__list');
+    const teacherItem = (t, entries) => {
+      const b = el('button', 'gp__item gp__item--teacher has-sch');
+      b.type = 'button';
+      const n = new Set(entries.map((e) => e.group)).size;
+      b.appendChild(el('strong', null, t));
+      b.appendChild(el('span', null, `${n} ${groupsWord(n)}`));
+      if (G.teacher === t) b.classList.add('is-active');
+      b.addEventListener('click', () => chooseGroup(TEACHER_PREFIX + t));
+      return b;
+    };
     const draw = () => {
-      seg.querySelectorAll('.seg__btn').forEach((b) => b.classList.toggle('is-active', Number(b.dataset.c) === course && !search.value));
+      seg.querySelectorAll('.seg__btn').forEach((b) => b.classList.toggle('is-active', b.dataset.c === String(course) && !search.value));
       list.textContent = '';
       const q = normGroup(search.value);
-      const groups = q ? ALL_GROUPS.filter((g) => normGroup(g.name + g.title).includes(q)) : ALL_GROUPS.filter((g) => g.course === course);
-      if (!groups.length) list.appendChild(el('div', 'empty empty--sm', ALL_GROUPS.length ? 'Нічого не знайдено' : 'Список груп ще завантажується…'));
+      const tq = norm(search.value);
+      const groups = q ? ALL_GROUPS.filter((g) => normGroup(g.name + g.title).includes(q))
+        : course === 'teachers' ? [] : ALL_GROUPS.filter((g) => g.course === course);
+      const teachers = tq ? [...TEACHERS].filter(([t]) => norm(t).includes(tq))
+        : course === 'teachers' ? [...TEACHERS] : [];
+      if (!groups.length && !teachers.length) list.appendChild(el('div', 'empty empty--sm', ALL_GROUPS.length ? 'Нічого не знайдено' : 'Список груп ще завантажується…'));
+      for (const [t, entries] of teachers) list.appendChild(teacherItem(t, entries));
       for (const g of groups) {
         const b = el('button', 'gp__item');
         b.type = 'button';
@@ -1368,6 +1498,13 @@
       b.addEventListener('click', () => { course = Number(c); search.value = ''; draw(); });
       seg.appendChild(b);
     }
+    if (TEACHERS.size) {
+      const b = el('button', 'seg__btn', 'Викладачі');
+      b.type = 'button';
+      b.dataset.c = 'teachers';
+      b.addEventListener('click', () => { course = 'teachers'; search.value = ''; draw(); });
+      seg.appendChild(b);
+    }
     search.addEventListener('input', draw);
     box.append(seg, list);
     box.appendChild(el('p', 'hint gp__hint', 'Розклади беруться з офіційних PDF на сайті коледжу й оновлюються автоматично щодня.'));
@@ -1384,13 +1521,15 @@
     renderAll();
     renderBrand();
     playSound('ui');
-    toast('Група: ' + G.title);
+    toast((G.teacher ? 'Викладач: ' : 'Група: ') + G.title);
     refreshAccess().then(() => { if (isAdmin() && reopenAdminAfterPick) { reopenAdminAfterPick = false; openAccount(); } });
   }
   let reopenAdminAfterPick = false;   // адмін перейшов до вибору групи з панелі — повернути його в панель
 
   function renderBrand() {
-    $('groupName').textContent = (lockedGroup ? '🔒 ' : '') + G.title;
+    $('groupName').textContent = (lockedGroup ? '🔒 ' : G.teacher ? '👤 ' : '') + G.title;
+    const mineBtn = document.querySelector('#ordersFilter [data-filter="mine"]');
+    if (mineBtn) mineBtn.textContent = G.teacher ? 'Цей викладач' : 'Моя група';
     $('groupName').classList.toggle('is-locked', !!lockedGroup);
     document.title = `${C.siteName} · ${G.title}`;
     $('openAccount').classList.toggle('is-on', !!(auth.profile && (isStarosta() || isAdmin())));
@@ -2171,6 +2310,13 @@
 
   function renderAdminGroup(box) {
     const pick = el('div', 'acc__orow');
+    // посилання й правки бувають лише в груп — у розкладі викладача їх нема що редагувати
+    if (G.teacher) {
+      pick.appendChild(el('span', null, `Відкрито розклад викладача ${G.title} — оберіть групу`));
+      pick.appendChild(btn('Обрати групу', 'btn--ghost btn--sm', () => { reopenAdminAfterPick = true; closeModal(); openGroupPicker(); }));
+      box.appendChild(pick);
+      return;
+    }
     pick.appendChild(el('span', null, `Редагуєте групу: ${G.title}`));
     pick.appendChild(btn('Змінити групу', 'btn--ghost btn--sm', () => { reopenAdminAfterPick = true; closeModal(); openGroupPicker(); }));
     box.appendChild(pick);

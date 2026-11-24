@@ -51,6 +51,13 @@ window.SCHEDULE_CONFIG = {
     pollSec: 30,
   },
 
+  /* Звідки сайт бере розклади й архів розпоряджень:
+     'json' — лише файли data/*.json (як раніше);
+     'db'   — з бази (supabase/history.sql): там уся історія; якщо база недоступна — з файлів. */
+  dataSource: 'db',
+  // скільки розпоряджень показувати в архіві (у файлі data/orders.json їх максимум 80, у базі — усі)
+  ordersHistory: 200,
+
   links: {
     college: 'https://ccte.nau.edu.ua/',
     schedule: 'https://ccte.nau.edu.ua/Розклад%20занять.html',

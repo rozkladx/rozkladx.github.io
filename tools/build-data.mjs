@@ -14,6 +14,59 @@ const UA = { 'User-Agent': 'RozkladX schedule bot (+https://rozkladx.github.io/)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ---------- База (supabase/history.sql) ----------
+   Пише лише за наявності секрету SUPABASE_SERVICE_ROLE_KEY. Без нього все працює як раніше — лише файли data/*.json. */
+let dbCfg;
+async function db() {
+  if (dbCfg !== undefined) return dbCfg;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  let url = process.env.SUPABASE_URL;
+  if (!url) { try { url = ((await readFile('js/data.js', 'utf8')).match(/url:\s*'(https:\/\/[^']+supabase\.co)'/) || [])[1]; } catch (e) { /* немає */ } }
+  dbCfg = key && url ? { url, key } : null;
+  if (!dbCfg) console.log('База: SUPABASE_SERVICE_ROLE_KEY не задано — пишу лише файли');
+  return dbCfg;
+}
+async function rest(path, { method = 'GET', body, prefer } = {}) {
+  const c = await db();
+  const r = await fetch(c.url + '/rest/v1/' + path, {
+    method,
+    headers: { apikey: c.key, Authorization: 'Bearer ' + c.key, 'Content-Type': 'application/json', ...(prefer ? { Prefer: prefer } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+  return method === 'GET' ? r.json() : null;
+}
+const groupHash = (schedule) => createHash('sha256').update(JSON.stringify(schedule)).digest('hex').slice(0, 16);
+
+// групи + нові версії розкладів (лише ті, що змінились від останньої збереженої)
+async function syncSchedulesToDb(out) {
+  if (!(await db())) return;
+  const now = new Date().toISOString();
+  await rest('schedule_groups?on_conflict=group_name', {
+    method: 'POST', prefer: 'resolution=merge-duplicates',
+    body: out.map((g, i) => ({ group_name: g.name, course: g.course, pdf: g.pdf, sort: i, error: g.error || null, active: true, checked_at: now })),
+  });
+  // групи, яких уже немає на сайті коледжу, ховаємо (не видаляємо — їхня історія лишається)
+  const names = '(' + out.map((g) => '"' + g.name.replace(/["\\]/g, '\\$&') + '"').join(',') + ')';
+  await rest('schedule_groups?active=is.true&group_name=not.in.' + encodeURIComponent(names), { method: 'PATCH', body: { active: false } });
+  const current = Object.fromEntries((await rest('schedule_current?select=name,hash&limit=1000')).map((r) => [r.name, r.hash]));
+  // нову версію пишемо лише з успішно прочитаного PDF (stale-копія — це вже збережена стара версія)
+  const fresh = out.filter((g) => g.schedule && !g.error && current[g.name] !== groupHash(g.schedule))
+    .map((g) => ({ group_name: g.name, title: g.title || '', schedule: g.schedule, hash: groupHash(g.schedule) }));
+  if (fresh.length) await rest('schedule_versions', { method: 'POST', body: fresh });
+  console.log(`База: груп ${out.length}, нових версій розкладу ${fresh.length}`);
+}
+
+async function syncOrdersToDb(changed) {
+  if (!changed.length || !(await db())) return;
+  await rest('order_archive?on_conflict=key', {
+    method: 'POST', prefer: 'resolution=merge-duplicates',
+    body: changed.map((o) => ({ key: o.key, csv: o.csv, fetched_at: o.fetchedAt })),
+  });
+  console.log(`База: розпоряджень збережено ${changed.length}`);
+}
+
 async function get(url, as = 'text') {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -75,6 +128,7 @@ async function buildSchedules() {
   }
   const ok = out.filter((g) => g.schedule && !g.error).length;
   if (ok < groups.length / 2) throw new Error(`розібрано лише ${ok} із ${groups.length} — не перезаписуємо файл`);
+  try { await syncSchedulesToDb(out); } catch (e) { console.log('База (розклади): ' + e.message); }
   // хеш змісту: якщо розклади ті самі, файл не чіпаємо — ні коміту, ні перезбирання сайту
   const hash = createHash('sha256').update(JSON.stringify(out)).digest('hex').slice(0, 16);
   let prevHash = null;
@@ -90,15 +144,18 @@ async function buildOrders() {
   try { store = JSON.parse(await readFile('data/orders.json', 'utf8')); } catch (e) { /* перший запуск */ }
   const base = `https://docs.google.com/spreadsheets/d/${DRIVE_ID}/gviz/tq?tqx=out:csv&headers=0`;
   let added = 0;
+  const changed = [];   // нові/змінені — їх і пишемо в базу
   for (const sheet of ['', 'Лист2', 'Лист3']) {
     let csv;
     try { csv = await get(base + (sheet ? '&sheet=' + sheet : '')); } catch (e) { console.log('заміни: ' + e.message); continue; }
     if (!/РОЗПОРЯДЖЕННЯ|ЗАМІНА/i.test(csv)) continue;
     const key = (csv.match(/РОЗПОРЯДЖЕННЯ\s*№\s*(\d+)/i) || [])[1] + '|' + (csv.match(/на\s+(\d{1,2}\s+[а-яіїєґ']+\s+\d{4})/i) || [])[1];
     const i = store.orders.findIndex((o) => o.key === key);
-    if (i >= 0) { if (store.orders[i].csv !== csv) { store.orders[i] = { key, csv, fetchedAt: new Date().toISOString() }; added++; } }
-    else { store.orders.unshift({ key, csv, fetchedAt: new Date().toISOString() }); added++; }
+    if (i >= 0) { if (store.orders[i].csv !== csv) { store.orders[i] = { key, csv, fetchedAt: new Date().toISOString() }; added++; changed.push(store.orders[i]); } }
+    else { store.orders.unshift({ key, csv, fetchedAt: new Date().toISOString() }); added++; changed.push(store.orders[0]); }
   }
+  try { await syncOrdersToDb(changed); } catch (e) { console.log('База (розпорядження): ' + e.message); }
+  // у файлі — лише останні ORDERS_KEEP (щоб не розростався); у базі зберігаються всі
   store.orders = store.orders.slice(0, ORDERS_KEEP);
   store.updatedAt = new Date().toISOString();
   if (added) await writeFile('data/orders.json', JSON.stringify(store, null, 1));
