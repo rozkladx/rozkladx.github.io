@@ -54,7 +54,7 @@ window.SCHEDULE_CONFIG = {
   /* Звідки сайт бере розклади й архів розпоряджень:
      'json' — лише файли data/*.json (як раніше);
      'db'   — з бази (supabase/history.sql): там уся історія; якщо база недоступна — з файлів. */
-  dataSource: 'db',
+  dataSource: 'json',   // 'db' — після виконання supabase/history.sql і додавання секрету SUPABASE_SERVICE_ROLE_KEY
   // скільки розпоряджень показувати в архіві (у файлі data/orders.json їх максимум 80, у базі — усі)
   ordersHistory: 200,
 
