@@ -639,7 +639,8 @@
   }
 
   /* ---------- Тривога ---------- */
-  const alert = { active: null, since: null, at: 0, regions: [], source: '', error: null };
+  // cachedAt — час даних у джерелі (поле cachedat), calmVotes — скільки разів поспіль джерело каже «тривоги немає»
+  const alert = { active: null, since: null, at: 0, regions: [], source: '', error: null, cachedAt: '', calmVotes: 0 };
   let testAlertUntil = 0;
   let alertSilenced = false;
 
@@ -664,6 +665,22 @@
         alert.regions = Object.keys(j.states);
         const st = j.states[settings.region];
         if (!st) throw new Error('регіон не знайдено');
+        // 1) проксі (r.jina.ai) може віддати старішу копію з кешу — дані, старіші за вже показані, не беремо
+        const cachedAt = typeof j.cachedat === 'string' ? j.cachedat : '';
+        if (cachedAt && alert.cachedAt && cachedAt < alert.cachedAt) {
+          alert.at = Date.now();   // зв'язок є, показане лишається актуальним
+          alert.error = null;
+          return;
+        }
+        if (cachedAt) alert.cachedAt = cachedAt;
+        // 2) хибний «відбій» небезпечніший за хибну тривогу: знімаємо тривогу лише після двох «немає» поспіль
+        //    (≈30 с), а тривогу показуємо одразу
+        if (!st.alertnow && alert.active === true && ++alert.calmVotes < 2) {
+          alert.at = Date.now();
+          alert.error = null;
+          return;
+        }
+        alert.calmVotes = 0;
         alert.active = !!st.alertnow;
         alert.since = st.changed && !/^1970/.test(st.changed) ? st.changed : null;
         alert.at = Date.now();
@@ -1711,6 +1728,9 @@
       settings.region = e.target.value;
       saveSettings();
       prevAlert = undefined;
+      // інший регіон — стан попереднього не переносимо (інакше «відбій» нового регіону чекав би другого підтвердження)
+      alert.active = null;
+      alert.calmVotes = 0;
       pollAlert().then(renderAlert);
     });
     $('alertRepeat').checked = settings.alertRepeat;
