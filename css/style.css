@@ -558,6 +558,11 @@ td.grid__no span { display: block; }
 .orders__list { display: grid; gap: 10px; }
 .order { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); overflow: hidden; }
 .order.is-old { opacity: .7; }
+/* розпорядження, де є зміни для вибраної групи/викладача, — підсвічене */
+.order.has-mine { border-color: color-mix(in srgb, var(--warn) 60%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 25%, transparent), 0 0 18px color-mix(in srgb, var(--warn) 18%, transparent); }
+.order.has-mine.is-old { opacity: .85; }
+.orders__more { display: block; width: 100%; margin-top: 4px; padding: 10px 14px; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.orders__more:hover { color: var(--accent); border-color: var(--accent); }
 .order__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; cursor: pointer; list-style: none; font-weight: 700; }
 .order__head::-webkit-details-marker { display: none; }
 .order__head::before { content: "▸"; color: var(--accent); transition: transform .2s; }
@@ -855,5 +860,9 @@ body.alarm .fx__orb--a, body.alarm .fx__orb--b { background: radial-gradient(cir
   .weeknav #todayBtn { width: 100%; order: 5; }
   .order-note { font-size: 13px; }
   .order-note__go { display: none; }
+  /* усі 4 вкладки налаштувань уміщаються на телефоні без прокрутки */
+  .drawer__head { padding: 12px 10px; gap: 4px; }
+  .tabs { gap: 2px; }
+  .tabs__btn { padding: 8px 6px; font-size: 12px; }
   .fx__sun { width: 240px; height: 240px; margin-left: -120px; }
 }

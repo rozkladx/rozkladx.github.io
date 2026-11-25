@@ -133,6 +133,9 @@ async function buildSchedules() {
   const hash = createHash('sha256').update(JSON.stringify(out)).digest('hex').slice(0, 16);
   let prevHash = null;
   try { prevHash = JSON.parse(await readFile('data/schedules.json', 'utf8')).hash || null; } catch (e) { /* перший запуск */ }
+  // коли востаннє ПЕРЕВІРЯЛИ PDF (а не коли розклад востаннє змінювався) — маленький окремий файл,
+  // щоб сайт показував справжню дату перевірки, не перезаписуючи великий schedules.json
+  await writeFile('data/status.json', JSON.stringify({ schedulesCheckedAt: new Date().toISOString(), ok, total: groups.length }, null, 1));
   if (prevHash === hash) { console.log(`Розклади без змін (${ok}/${groups.length}), файл не оновлюю`); return; }
   await writeFile('data/schedules.json', JSON.stringify({ generatedAt: new Date().toISOString(), hash, source: SCHEDULE_PAGE, groups: out }, null, 1));
   console.log(`Готово: ${ok}/${groups.length} груп (зміни є)`);

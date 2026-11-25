@@ -5,9 +5,13 @@
 name: Оновлення розкладів і замін
 
 on:
+  # GitHub запускає розклад із запізненням і пропускає частину запусків, найбільше — на початку години
+  # й о :30 (фактично було ~3 запуски на день, перевірка PDF о ~13–15 замість 05:17). Тому:
+  # непопулярні хвилини, два запуски перевірки PDF (основний і запасний).
   schedule:
-    - cron: '17 3 * * *'          # розклади: щодня ~05:17 за Києвом (UTC+2)
-    - cron: '*/30 5-17 * * 1-6'   # заміни: кожні 30 хв, ПН–СБ, ~07:00–19:30 за Києвом
+    - cron: '41 1 * * *'          # розклади: щодня ~03:41 за Києвом (UTC+2)
+    - cron: '43 4 * * *'          # розклади, запасний запуск: ~06:43 за Києвом
+    - cron: '7,37 5-17 * * 1-6'   # заміни: кожні 30 хв, ПН–СБ, ~07:00–19:30 за Києвом
   workflow_dispatch:
     inputs:
       schedules:
@@ -42,7 +46,7 @@ jobs:
           # ключ service_role з Supabase → Settings → API; без нього дані пишуться лише у файли data/*.json
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.schedules }}" = "true" ] || [ "${{ github.event.schedule }}" = "17 3 * * *" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.schedules }}" = "true" ] || [ "${{ github.event.schedule }}" = "41 1 * * *" ] || [ "${{ github.event.schedule }}" = "43 4 * * *" ]; then
             node tools/build-data.mjs
           else
             node tools/build-data.mjs --only-orders

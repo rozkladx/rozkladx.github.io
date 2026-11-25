@@ -145,7 +145,14 @@
       schedulesMeta.error = String(e.message || e);
       applySchedules(load('rz_schedules', { groups: [] }));   // офлайн — остання збережена копія
     }
+    // коли робот востаннє перевіряв PDF (schedules.json переписується лише коли розклад змінився)
+    try {
+      const s = await (await fetch('data/status.json?t=' + Math.floor(Date.now() / 600000), { cache: 'no-cache' })).json();
+      if (s && s.schedulesCheckedAt) schedulesMeta.checkedAt = s.schedulesCheckedAt;
+    } catch (e) { /* файла ще немає — показуємо дату останньої зміни */ }
   }
+  // дата для підпису «перевірено»: остання перевірка PDF, а якщо її не знаємо — остання зміна розкладу
+  const checkedAt = () => [schedulesMeta.checkedAt, schedulesMeta.generatedAt].filter(Boolean).sort().pop() || null;
   function applySchedules(j) {
     ALL_GROUPS = (j.groups || []).map((g) => ({ ...g, title: titleOf(g) }));
     schedulesMeta.generatedAt = j.generatedAt || null;
@@ -427,6 +434,25 @@
   const LAT2CYR = { A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', I: 'І', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х', Y: 'У' };
   const normGroup = (s) => String(s || '').toUpperCase().replace(/[\s\-–_.]/g, '').replace(/[ABCEHIKMOPTXY]/g, (c) => LAT2CYR[c]);
 
+  // групи з колонки «Група» розпорядження → нормалізовані коди:
+  //  «А21,20» → А21, А20 (цифри без букв беруть букви попередньої групи);
+  //  «МФІТ11» → МЕП11, ФІТ11 (склеєні назви — словник C.groupAliases у data.js)
+  function orderGroupCodes(text) {
+    const out = [];
+    let prefix = '';
+    for (const part of String(text || '').split(/[,;/+]/)) {
+      let code = normGroup(part);
+      if (!code) continue;
+      if (/^\d+$/.test(code) && prefix) code = prefix + code;
+      const m = code.match(/^(\D+)(\d+)$/);
+      if (m) prefix = m[1];
+      const alias = m && (C.groupAliases || {})[m[1]];
+      if (alias) for (const p of alias) out.push(normGroup(p) + m[2]);
+      else out.push(code);
+    }
+    return out;
+  }
+
   // «І», «ІІ», «ІУ» (кирилицею), «IV», «1», «1-2», «I,II»
   function parsePairs(s) {
     const t = String(s || '').toUpperCase().replace(/І/g, 'I').replace(/[УU]/g, 'V').replace(/Х/g, 'X').replace(/[\s.]/g, '');
@@ -548,7 +574,7 @@
   // для викладача «свої» — рядки, де він у колонці «за розкладом» або «заміна» (за прізвищем)
   const isMine = (r) => (G.teacher
     ? [r.fromTeacher, r.toTeacher].some((t) => t && surname(t) === surname(G.teacher))
-    : r.group.split(/[,;/]/).some((g) => G.codes.includes(normGroup(g))));
+    : orderGroupCodes(r.group).some((g) => G.codes.includes(g)));
 
   // спільний архів розпоряджень (його веде GitHub Actions у data/orders.json) — видно й старі, які вже зникли з Drive
   // з бази — повний архів (C.ordersHistory штук), інакше — файл з останніми 80
@@ -1302,7 +1328,7 @@
     box.hidden = false;
     box.textContent = '';
     box.classList.toggle('no-sch--ok', !!G.sch && !G.stale);
-    const upd = schedulesMeta.generatedAt ? fmt(viewTZ(), { day: '2-digit', month: '2-digit', ...HM }).format(new Date(schedulesMeta.generatedAt)) : '';
+    const upd = checkedAt() ? fmt(viewTZ(), { day: '2-digit', month: '2-digit', ...HM }).format(new Date(checkedAt())) : '';
     if (G.teacher) {
       box.classList.toggle('no-sch--ok', G.entries.length > 0);
       box.appendChild(el('div', null, G.entries.length
@@ -1361,13 +1387,22 @@
       return;
     }
     const today = dateKeyOf(nowWallMs());
-    orders.forEach((o, idx) => {
+    // «Моя група»: лише розпорядження, де є зміни для мене (або майбутня робоча субота для мого курсу);
+    // «Усі групи»: усі, а мої — підсвічені
+    const satForMe = (o) => !!(o.satNote && o.dateKey && o.dateKey >= today && !G.teacher && parseSatRule(o.satNote, G.course));
+    const relevant = (o) => o.rows.some(isMine) || satForMe(o);
+    const shown = state.filter === 'mine' ? orders.filter(relevant) : orders;
+    if (!shown.length) {
+      list.appendChild(el('div', 'empty', G.teacher ? 'Замін за участю цього викладача немає' : `Для ${G.title} замін немає 🎉`));
+    }
+    shown.forEach((o, idx) => {
       const det = el('details', 'order');
       if (state.openOrders.has(o.id) || (idx === 0 && !state.openOrders.size)) det.open = true;
       det.addEventListener('toggle', () => { if (det.open) state.openOrders.add(o.id); else state.openOrders.delete(o.id); });
       if (o.dateKey && o.dateKey < today) det.classList.add('is-old');
       const sum = el('summary', 'order__head');
       const myCount = o.rows.filter(isMine).length;
+      if (myCount) det.classList.add('has-mine');
       sum.appendChild(el('span', 'order__num', '№' + (o.number || '?')));
       sum.appendChild(el('span', 'order__title', o.dateKey ? `Заміна занять на ${longDate(o.dateKey)} (${DAY_FULL[weekdayOf(o.dateKey)]})` : (o.title || 'Розпорядження')));
       sum.appendChild(el('span', 'badge' + (myCount ? '' : ' badge--muted'), myCount ? `${G.title}: ${myCount}` : 'без змін для нас'));
@@ -1409,6 +1444,13 @@
       if (o.signer) det.appendChild(el('div', 'order__sign', o.signer.replace(/_{3,}/g, ' ')));
       list.appendChild(det);
     });
+    const hidden = orders.length - shown.length;
+    if (hidden > 0) {
+      const more = el('button', 'orders__more', `Ще ${hidden} без змін для ${G.teacher ? 'цього викладача' : G.title} — показати всі групи`);
+      more.type = 'button';
+      more.addEventListener('click', () => document.querySelector('#ordersFilter [data-filter="all"]').click());
+      list.appendChild(more);
+    }
   }
 
   function renderAll() {
