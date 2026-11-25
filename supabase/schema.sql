@@ -331,3 +331,6 @@ grant execute on function public.is_lesson_url(text) to anon, authenticated;
 -- (замініть пошту на свою і виконайте лише цей рядок):
 --   update public.profiles set role = 'admin' where email = 'ваша@пошта';
 -- =====================================================================
+
+-- одразу оновити список таблиць і функцій для сайту (інакше Supabase якийсь час пише «Could not find the function … in the schema cache»)
+notify pgrst, 'reload schema';

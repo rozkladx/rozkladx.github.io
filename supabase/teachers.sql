@@ -138,3 +138,6 @@ grant execute on function public.admin_set_role(uuid, text, text), public.admin_
   public.claim_teacher(text), public.admin_teacher_invite(), public.admin_rotate_teacher_invite() to authenticated;
 revoke execute on function public.admin_set_role(uuid, text, text), public.admin_delete_user(uuid),
   public.claim_teacher(text), public.admin_teacher_invite(), public.admin_rotate_teacher_invite() from anon, public;
+
+-- одразу оновити список таблиць і функцій для сайту (інакше Supabase якийсь час пише «Could not find the function … in the schema cache»)
+notify pgrst, 'reload schema';

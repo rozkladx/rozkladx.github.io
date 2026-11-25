@@ -79,3 +79,6 @@ grant select on public.schedule_groups, public.schedule_versions, public.order_a
 --   select fetched_at, hash from schedule_versions where group_name = 'П-42' order by fetched_at desc;
 -- Скільки розпоряджень в архіві:
 --   select count(*), min(first_seen_at) from order_archive;
+
+-- одразу оновити список таблиць і функцій для сайту (інакше Supabase якийсь час пише «Could not find the function … in the schema cache»)
+notify pgrst, 'reload schema';
